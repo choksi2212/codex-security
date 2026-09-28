@@ -88,7 +88,7 @@ import {
   streamWindowsCredentialAclDescriptors,
 } from "../src/runtime.js";
 import { inspectTrustedExecutable } from "../src/trusted-executable.js";
-import { loadBundledRuntime, PLUGIN_ROOT } from "./plugin-root.js";
+import { PLUGIN_ROOT } from "./plugin-root.js";
 import { runTestInSubprocess } from "./support/test-subprocess.js";
 import {
   lowerUuid7Turn,
