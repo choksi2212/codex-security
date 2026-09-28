@@ -3444,6 +3444,73 @@ def test_reopened_candidate_respects_current_outcome(
     assert (candidate in replay[2]["deferred"]) is (outcome == "other_worker")
 
 
+@pytest.mark.parametrize("complete", [False, True])
+@pytest.mark.parametrize("variant", ["distinct", "identical", "rename"])
+def test_worker_closure_preserves_ambiguous_legacy_surface_ids(
+    tmp_path: Path, generic_review_recovery, complete: bool, variant: str
+) -> None:
+    module, pending, closed, binding = generic_review_recovery
+    pending["complete"] = complete
+    pending["coverage"]["deferred"][0]["surfaceIds"] = ["entry"]
+    pending["coverage"]["surfaces"] = [
+        {
+            "id": "entry",
+            "label": "Previous label" if variant == "rename" else "Entry A",
+            "disposition": "needs_follow_up",
+            "receiptRefs": [],
+        }
+    ]
+    if variant != "rename":
+        pending["coverage"]["surfaces"].append(
+            {
+                **pending["coverage"]["surfaces"][0],
+                "label": "Entry B" if variant == "distinct" else "Entry A",
+            }
+        )
+    closed["coverage"]["surfaces"] = [
+        {
+            "id": "entry",
+            "label": "Updated label" if variant == "rename" else "Entry A",
+            "disposition": "no_issue_found",
+            "receiptRefs": [],
+        }
+    ]
+    output = tmp_path / "worker"
+    output.mkdir()
+    result_path = output / "result.json"
+    result_path.write_text(json.dumps(pending))
+    original = write_checkpoint(output / "checkpoints", pending)
+    for path in (result_path, original):
+        os.utime(path, ns=(100, 100))
+    terminal = write_checkpoint(output / "checkpoints", closed)
+    os.utime(terminal, ns=(200, 200))
+    head = output / "checkpoint-head.json"
+    head.write_text(json.dumps({"checkpoint": terminal.name}))
+    os.utime(head, ns=(200, 200))
+    original_bytes = {path: path.read_bytes() for path in (result_path, original, terminal, head)}
+    workers = [saved_discovery_worker(output, "worker", 1)]
+
+    first = module.merge_saved_results(
+        tmp_path, pending["scanId"], binding, workers, [], stopped=True, reason="interrupted"
+    )
+    replay = replay_saved_results(
+        module, first, tmp_path, pending["scanId"], binding, workers, stopped=True
+    )
+
+    for documents in (first, replay):
+        surfaces = documents[2]["surfaces"]
+        if variant == "distinct":
+            assert any(
+                row["label"] == "Entry B" and row["disposition"] == "needs_follow_up"
+                for row in surfaces
+            )
+            assert len({row["id"] for row in surfaces}) == len(surfaces)
+        else:
+            assert surfaces == closed["coverage"]["surfaces"]
+    assert replay[2] == first[2]
+    assert all(path.read_bytes() == contents for path, contents in original_bytes.items())
+
+
 def test_parent_closure_cannot_discard_reopened_worker_same_id(
     tmp_path: Path, generic_review_recovery
 ) -> None:

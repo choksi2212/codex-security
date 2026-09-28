@@ -13,6 +13,7 @@ import sqlite3
 import stat
 import sys
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -31,7 +32,6 @@ from finalize_scan_contract import (
     _read_scan_local_json_with_metadata,
     _recover_unsealed_findings,
     _remove_scan_local_file_if_exists,
-    _require_str,
     _validate_completion_binding,
     _validate_resolved_deferred,
     _validate_schema_node,
@@ -759,6 +759,11 @@ def _generic_surface_updates(
             if not isinstance(identity, str):
                 continue
             matches = saved_surfaces[(owner, identity)]
+            # Older writers could assign one ID to distinct surfaces in a draft.
+            # A closure cannot identify which of those observations it replaces.
+            by_source = dict(matches)
+            if any(row != by_source[saved_path] for saved_path, row in matches):
+                continue
             if any(
                 "candidateId" in row or "candidate" in row or "finding" in row for _, row in matches
             ):
@@ -818,6 +823,45 @@ def _generic_surface_updates(
     return replaced, updates
 
 
+@contextmanager
+def preserve_parent_head_on_error(scan_dir: Path) -> Iterator[None]:
+    """Keep rejected completion attempts from becoming accepted parent observations."""
+    head_path = scan_dir / "checkpoint-head.json"
+    previous = None
+    try:
+        head_path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        descriptor = open_scan_local_file_descriptor(
+            scan_dir, "checkpoint-head.json", "Saved parent checkpoint head"
+        )
+        with os.fdopen(descriptor, "rb") as handle:
+            metadata = os.fstat(handle.fileno())
+            previous = (handle.read(), metadata)
+    directories = ("checkpoints", "checkpoint-heads")
+    previous_files = {
+        relative for directory in directories for relative in _checkpoint_paths(scan_dir, directory)
+    }
+    try:
+        yield
+    except ContractError:
+        if previous is None:
+            _remove_scan_local_file_if_exists(scan_dir, "checkpoint-head.json")
+        else:
+            payload, metadata = previous
+            write_scan_local_bytes(scan_dir, "checkpoint-head.json", payload)
+            os.utime(head_path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+        current_files = {
+            relative
+            for directory in directories
+            for relative in _checkpoint_paths(scan_dir, directory)
+        }
+        for relative in current_files - previous_files:
+            _remove_scan_local_file_if_exists(scan_dir, relative)
+        raise
+
+
 def merge_saved_results(
     scan_dir: Path,
     scan_id: str,
@@ -868,26 +912,6 @@ def merge_saved_results(
                     for name in ("findings.json", "coverage.json", "scan-manifest.json")
                 )
             if not parent_scan.get("sealedAt") or allow_frozen_legacy_parent:
-                publish_head = True
-                if (
-                    head_modified is None
-                    and not stopped
-                    and binding["coverageMode"] != "deep_repository"
-                    and parent["coverage"]
-                ):
-                    # Do not turn a rejected file-authored inventory into an accepted
-                    # head. Retain its raw evidence and let finalization validate it.
-                    coverage_schema = _read_json(
-                        Path(__file__).resolve().parent.parent / "schemas" / "coverage.schema.json"
-                    )
-                    try:
-                        _validate_schema_node(
-                            _require_str(parent["coverage"], "inventoryStrategy", "coverage"),
-                            coverage_schema["properties"]["inventoryStrategy"],
-                            "coverage.schema.inventoryStrategy",
-                        )
-                    except ContractError:
-                        publish_head = False
                 head_path = scan_dir / "checkpoint-head.json"
                 tied_observations = False
                 if head_modified == parent_modified:
@@ -907,9 +931,7 @@ def merge_saved_results(
                     write_scan_local_bytes(scan_dir, parent_checkpoint, payload)
                     # A recovery copy must not appear newer than the review it copies.
                     os.utime(checkpoint_path, ns=(parent_modified, parent_modified))
-                if publish_head and (
-                    head_modified is None or head_modified < parent_modified or tied_observations
-                ):
+                if head_modified is None or head_modified < parent_modified or tied_observations:
                     write_scan_local_bytes(
                         scan_dir,
                         "checkpoint-head.json",

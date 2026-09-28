@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 import uuid
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -1520,30 +1520,38 @@ def complete_scan_locked(
                 f"{', '.join(missing_drafts)}. Check that the scan agent can run shell "
                 "commands and write to the scan directory before retrying."
             )
+    merge_parent_draft = (
+        scan["mode"] != "deep" and current_manifest_path is not None and not already_sealed
+    )
     wrote = False
     try:
-        prepared = _prepare_scan_finalization(
-            scan_dir,
-            expected_coverage_mode=expected_coverage_mode(scan),
-            completion_binding=completion_binding,
-            # Save the finished Deep result as submitted. Worker drafts and
-            # recovery repairs belong to the stopped-scan path.
-            completion_warnings=warnings if scan["mode"] != "deep" else None,
-            draft_documents=saved_results.merge_saved_results(
+        with (
+            saved_results.preserve_parent_head_on_error(scan_dir)
+            if merge_parent_draft
+            else nullcontext()
+        ):
+            prepared = _prepare_scan_finalization(
                 scan_dir,
-                scan["id"],
-                completion_binding,
-                connection.execute(
-                    "SELECT * FROM deep_scan_workers WHERE scan_id = ? ORDER BY created_at, id",
-                    (scan["id"],),
-                ).fetchall(),
-                warnings,
-                stopped=False,
-                reason="",
+                expected_coverage_mode=expected_coverage_mode(scan),
+                completion_binding=completion_binding,
+                # Save the finished Deep result as submitted. Worker drafts and
+                # recovery repairs belong to the stopped-scan path.
+                completion_warnings=warnings if scan["mode"] != "deep" else None,
+                draft_documents=saved_results.merge_saved_results(
+                    scan_dir,
+                    scan["id"],
+                    completion_binding,
+                    connection.execute(
+                        "SELECT * FROM deep_scan_workers WHERE scan_id = ? ORDER BY created_at, id",
+                        (scan["id"],),
+                    ).fetchall(),
+                    warnings,
+                    stopped=False,
+                    reason="",
+                )
+                if merge_parent_draft
+                else None,
             )
-            if scan["mode"] != "deep" and current_manifest_path is not None and not already_sealed
-            else None,
-        )
         add_warning()
         wrote = True
         manifest, findings, _ = _write_prepared_scan_finalization(prepared)
