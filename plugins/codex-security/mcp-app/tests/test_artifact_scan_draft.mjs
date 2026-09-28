@@ -70,6 +70,7 @@ try {
         label: "Archive extraction",
         disposition: "reported",
         notes: "Reviewed.",
+        receiptRefs: [],
       },
     ],
     explicitExclusions: [],
@@ -433,6 +434,7 @@ try {
         label: "Validated archive path traversal",
         disposition: "reported",
         notes: "The archive candidate was validated.",
+        receiptRefs: [],
       },
     ],
   };

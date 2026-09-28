@@ -21,6 +21,17 @@ const { recordCodexSecurityScanDraftViaWorkbench, saveScanDraftCheckpoint } =
   draftApi;
 const generic = { reason: "Review remains.", paths: ["src/example.py"] };
 const close = (id, reason = "Review completed.") => ({ id, reason });
+const findingFor = (candidateId) => ({
+  ruleId: "fixture.review",
+  title: "Synthetic review finding",
+  summary: "The candidate outcome must survive publication.",
+  severity: { level: "low" },
+  confidence: { level: "high", rationale: "Synthetic persistence fixture." },
+  taxonomy: { category: "other", cwe: [] },
+  locations: [{ path: "src/example.py", startLine: 1 }],
+  remediation: "Complete the review.",
+  provenance: { source: "local_plugin", candidateId },
+});
 
 for (const updateSavedSurface of [false, true]) {
   test(`worker: repeated progress preserves independent evidence, saved surface update=${updateSavedSurface}`, async (t) => {
@@ -88,7 +99,13 @@ for (const updateSavedSurface of [false, true]) {
       assert.deepEqual(result.coverage.resolvedDeferred, [
         close(stillClosed.id),
       ]);
-      assert.deepEqual(result.coverage.surfaces, surfaces);
+      assert.deepEqual(
+        result.coverage.surfaces,
+        surfaces.map((surface) => ({
+          ...surface,
+          receiptRefs: surface.receiptRefs ?? [],
+        })),
+      );
       const published = JSON.parse(
         await readFile(path.join(f.root, "result.json"), "utf8"),
       );
@@ -231,6 +248,97 @@ for (const outcome of ["rejected", "reported"]) {
 }
 
 for (const layout of ["standard", "diff", "worker"]) {
+  test(`${layout}: a legacy ID-less checkpoint retains one closable task`, async (t) => {
+    const f = await fixture(t, layout);
+    await saveScanDraftCheckpoint(
+      f.context,
+      f.draft({ deferred: [generic] }),
+      false,
+    );
+    let id;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const result = await f.write(f.draft({}, true));
+      assert.equal(result.coverage.deferred.length, 1);
+      id ??= result.coverage.deferred[0].id;
+      assert.equal(result.coverage.deferred[0].id, id);
+    }
+    await f.write(f.draft({ resolvedDeferred: [close(id)] }, true));
+    const retried = await f.write(f.draft({}, true));
+    assert.deepEqual(retried.coverage.deferred, []);
+    assert.deepEqual(retried.coverage.resolvedDeferred, [close(id)]);
+  });
+
+  test(`${layout}: inheriting a candidate outcome keeps newer follow-up work`, async (t) => {
+    const f = await fixture(t, layout);
+    const surface = { id: "api", label: "API", disposition: "needs_follow_up" };
+    await f.write(
+      f.draft({
+        deferred: [
+          {
+            id: "candidate-review",
+            candidateId: "candidate-review",
+            ...generic,
+          },
+        ],
+        surfaces: [surface],
+      }),
+    );
+    await f.write({
+      ...f.draft({ surfaces: [surface] }),
+      findings: [findingFor("candidate-review")],
+    });
+    const result = await f.write(f.draft({}, true));
+    assert.equal(result.findingCount, 1);
+    assert.equal(result.coverage.completeness, "partial");
+    assert.deepEqual(
+      result.coverage.surfaces.map(({ id, disposition }) => ({
+        id,
+        disposition,
+      })),
+      [{ id: surface.id, disposition: surface.disposition }],
+    );
+  });
+
+  for (const outcome of ["reported", "rejected", "not_applicable"]) {
+    test(`${layout}: redundant candidate closure requires its ordinary ${outcome} outcome`, async (t) => {
+      const f = await fixture(t, layout);
+      const pending = {
+        id: "candidate-task",
+        candidateId: "candidate-review",
+        ...generic,
+      };
+      const independent = { id: "independent-review", ...generic };
+      await f.write(f.draft({ deferred: [pending, independent] }));
+      const terminal = f.draft(
+        { resolvedDeferred: [close(pending.id), close(pending.candidateId)] },
+        true,
+      );
+      await assert.rejects(f.write(terminal), /cannot close candidate/);
+      assert.deepEqual((await f.read()).deferred, [pending, independent]);
+      terminal.findings = [findingFor("unrelated-candidate")];
+      await assert.rejects(f.write(terminal), /cannot close candidate/);
+      assert.deepEqual((await f.read()).deferred, [pending, independent]);
+      terminal.findings = [];
+      if (outcome === "reported")
+        terminal.findings = [findingFor(pending.candidateId)];
+      else
+        terminal.coverage.surfaces = [
+          {
+            id: "candidate-surface",
+            candidateId: pending.candidateId,
+            label: "Candidate",
+            disposition: outcome,
+          },
+        ];
+      for (const input of [terminal, f.draft({}, true)]) {
+        const result = await f.write(input);
+        assert.equal(result.findingCount, outcome === "reported" ? 1 : 0);
+        assert.deepEqual(result.coverage.deferred, [independent]);
+        assert.deepEqual(result.coverage.resolvedDeferred ?? [], []);
+      }
+    });
+  }
+
   test(`${layout}: duplicate task IDs cannot close independent deferred work`, async (t) => {
     const f = await fixture(t, layout);
     const first = { id: "review", ...generic };
@@ -711,6 +819,7 @@ for (const layout of ["standard", "diff", "worker"]) {
           await readFile(path.join(f.root, "checkpoints", name), "utf8"),
         );
         assert.equal(checkpoint.coverage.surfaces[0].id, surface.id);
+        assert.deepEqual(checkpoint.coverage.surfaces[0].receiptRefs, []);
         assert.equal(checkpoint.coverage.deferred[0].id, task.id);
       }
       const linked = await f.write(

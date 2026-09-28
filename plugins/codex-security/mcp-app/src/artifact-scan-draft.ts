@@ -447,6 +447,7 @@ async function preserveScanDraft(
       sources.unshift(progress);
     }
   }
+  const currentCandidateIds = completedCandidateIds(result);
   const resolvedCandidateIds = completedCandidateIds(result, sources);
   const { closedDeferredIds, resolvedSurfaces } = reconcileResolvedDeferred(
     result,
@@ -468,7 +469,7 @@ async function preserveScanDraft(
         const candidateId = item.candidateId ?? item.id;
         return (
           typeof candidateId !== "string" ||
-          !resolvedCandidateIds.has(candidateId)
+          !currentCandidateIds.has(candidateId)
         );
       })
     )
@@ -674,19 +675,18 @@ function reconcileResolvedDeferred(
   const historical = sources.flatMap(
     (source) => source.coverage.deferred as JsonObject[],
   );
+  const candidateRows = historical.filter(
+    (row) =>
+      typeof row.candidateId === "string" ||
+      "candidate" in row ||
+      "finding" in row,
+  );
   const candidateIds = new Set(
-    historical
-      .filter(
-        (row) =>
-          typeof row.candidateId === "string" ||
-          "candidate" in row ||
-          "finding" in row,
-      )
-      .flatMap((row) =>
-        [row.id, row.candidateId].filter(
-          (id): id is string => typeof id === "string",
-        ),
+    candidateRows.flatMap((row) =>
+      [row.id, row.candidateId].filter(
+        (id): id is string => typeof id === "string",
       ),
+    ),
   );
   const closures = new Map<string, JsonObject>();
   const previouslyClosed = new Set<string>();
@@ -721,10 +721,22 @@ function reconcileResolvedDeferred(
     closures.set(id, closure);
   }
   for (const id of closures.keys()) {
-    if (candidateIds.has(id))
+    if (candidateIds.has(id)) {
+      if (
+        candidateRows
+          .filter((row) => row.id === id || row.candidateId === id)
+          .every((row) =>
+            resolvedCandidateIds.has((row.candidateId ?? row.id) as string),
+          )
+      ) {
+        // The ordinary candidate outcome resolves this work; keep closures generic-only.
+        closures.delete(id);
+        continue;
+      }
       throw new Error(
         `scan draft: coverage.resolvedDeferred cannot close candidate ${id}; record its finding or disposition.`,
       );
+    }
     if (
       !closureSources.has(id) &&
       !historical.some((row) => row.id === id || row.candidateId === id)
@@ -1656,7 +1668,11 @@ export function parsePersistedScanDraft(
     if (!isObject(finding)) continue;
     normalizePersistedFindingDetails(finding);
   }
-  return parseScanDraftDocument(compatible);
+  const parsed = parseScanDraftDocument(compatible);
+  parsed.coverage.deferred = normalizeDeferred(
+    parsed.coverage.deferred as JsonObject[],
+  );
+  return parsed;
 }
 
 function parsePersistedCheckpoint(
@@ -2160,10 +2176,6 @@ function buildCoverage(
     inventoryStrategy: inventoryStrategy(context, scope, target),
     includePaths: scope.includePaths,
     excludePaths: scope.excludePaths,
-    surfaces: (semanticCoverage.surfaces as JsonObject[]).map((surface) => ({
-      ...surface,
-      receiptRefs: surface.receiptRefs ?? [],
-    })),
     ...(openQuestions === undefined
       ? {}
       : {
@@ -2202,7 +2214,7 @@ function normalizeSurfaces(surfaces: JsonObject[]): JsonObject[] {
       } while (surfaceIds.has(id) || reservedSurfaceIds.has(id));
     }
     surfaceIds.add(id);
-    return { ...surface, id };
+    return { ...surface, id, receiptRefs: surface.receiptRefs ?? [] };
   });
 }
 

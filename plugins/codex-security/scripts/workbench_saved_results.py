@@ -1387,6 +1387,9 @@ def merge_saved_results(
         for surface in surface_updates:
             if surface not in coverage["surfaces"]:
                 coverage["surfaces"].append(surface)
+        for surface in coverage["surfaces"]:
+            if isinstance(surface, dict):
+                surface.setdefault("receiptRefs", [])
 
     # Reopened work survives a superseded checkpoint, but current candidate
     # outcomes still apply. Parent closures cannot remove another worker's row.
@@ -1663,10 +1666,10 @@ def merge_saved_results(
                     and (field == "deferred" or item.get("disposition") == "needs_follow_up")
                 ):
                     continue
+                if field == "surfaces" and isinstance(item, dict):
+                    item = {**item, "receiptRefs": item.get("receiptRefs", [])}
                 if isinstance(item, dict) and "id" not in item:
                     semantic_item = dict(item)
-                    if field == "surfaces":
-                        semantic_item.setdefault("receiptRefs", [])
                     if any(
                         isinstance(existing, dict)
                         and {key: value for key, value in existing.items() if key != "id"}

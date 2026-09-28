@@ -789,7 +789,7 @@
           }
         },
         "resolvedDeferred": {
-          "description": "On final Standard or diff drafts, close generic tasks by saved ID and completion reason. Reuse saved surface IDs for updates. Candidate tasks need findings or dispositions.",
+          "description": "On final Standard or diff drafts, close generic tasks by saved ID and completion reason. Reuse saved surface IDs for updates. Candidate tasks need findings or dispositions; redundant closure entries for those outcomes are ignored.",
           "type": "array",
           "items": {
             "type": "object",

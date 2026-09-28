@@ -8,7 +8,11 @@ import uuid
 from pathlib import Path
 
 import pytest
-from test_workbench_standard_deep_results import accepted_standard_worker, deep_scan_fixture
+from test_workbench_standard_deep_results import (
+    accepted_standard_worker,
+    deep_scan_fixture,
+    write_saved_parent,
+)
 from workbench_test_support import (
     replay_saved_results,
     run_workbench,
@@ -129,6 +133,32 @@ def checkpoint_scan():
         "coverageMode": "deep_repository",
     }
     return scan_id, pending, closed, binding
+
+
+@pytest.mark.parametrize("has_receipts", [False, True])
+@pytest.mark.parametrize("has_canonical", [False, True])
+def test_recovery_keeps_one_surface_with_optional_empty_receipts(
+    tmp_path: Path, checkpoint_scan, has_receipts: bool, has_canonical: bool
+) -> None:
+    scan_id, _, _, binding = checkpoint_scan
+    surface = {"id": "api", "label": "API", "disposition": "needs_follow_up"}
+    draft = saved_draft(scan_id, surfaces=[surface])
+    if has_receipts:
+        surface["receiptRefs"] = []
+    checkpoint = write_checkpoint(tmp_path / "checkpoints", draft)
+    select(tmp_path, checkpoint, 50)
+    original = checkpoint.read_bytes()
+    if has_canonical:
+        canonical = copy.deepcopy(draft)
+        canonical["coverage"]["surfaces"][0]["receiptRefs"] = []
+        write_saved_parent(tmp_path, canonical, 100)
+    first = saved.merge_saved_results(
+        tmp_path, scan_id, binding, [], [], stopped=True, reason="interrupted"
+    )
+    replay = replay_saved_results(saved, first, tmp_path, scan_id, binding, [], stopped=True)
+    for result in (first, replay):
+        assert result[2]["surfaces"] == [{**surface, "receiptRefs": []}]
+    assert checkpoint.read_bytes() == original
 
 
 @pytest.mark.parametrize("layout", ["parent", "worker", "archived"])
