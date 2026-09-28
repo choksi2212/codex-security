@@ -231,6 +231,21 @@ for (const outcome of ["rejected", "reported"]) {
 }
 
 for (const layout of ["standard", "diff", "worker"]) {
+  test(`${layout}: duplicate task IDs cannot close independent deferred work`, async (t) => {
+    const f = await fixture(t, layout);
+    const first = { id: "review", ...generic };
+    const second = { ...first, paths: ["src/other.py"] };
+    await assert.rejects(
+      f.write(f.draft({ deferred: [first, second] })),
+      /coverage.deferred repeats review/,
+    );
+    assert.deepEqual(await readdir(f.root), []);
+    second.id = "other-review";
+    await f.write(f.draft({ deferred: [first, second] }));
+    await f.write(f.draft({ resolvedDeferred: [close(first.id)] }, true));
+    assert.deepEqual((await f.read()).deferred, [second]);
+  });
+
   test(`${layout}: returned deferred IDs support closure, retries and explicit reopening`, async (t) => {
     const f = await fixture(t, layout);
     const initial = await f.write(f.draft({ deferred: [generic] }));

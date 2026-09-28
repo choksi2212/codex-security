@@ -842,7 +842,11 @@ def merge_saved_results(
     if frozen_source_digests is None or allow_frozen_legacy_parent:
         try:
             parent_manifest, parent = _read_saved_parent_result(scan_dir, scan_id)
-            parent_modified = (scan_dir / "coverage.json").lstat().st_mtime_ns
+            # A partially published document set must not outrank its checkpoint.
+            parent_modified = min(
+                (scan_dir / name).lstat().st_mtime_ns
+                for name in ("findings.json", "coverage.json", "scan-manifest.json")
+            )
             parent_is_canonical = True
         except (ContractError, OSError, ValueError) as exc:
             if not stopped:
@@ -2056,28 +2060,6 @@ def write_scan_draft(db: Any, connection: Any, args: Any) -> dict[str, Any]:
                 "The scan stopped; its saved checkpoint was retained without replacing sealed results."
             )
         scan_dir = db.require_canonical_scan_directory(Path(scan["scan_dir"]))
-        if args.checkpoint_path is not None:
-            try:
-                checkpoint_relative = Path(args.checkpoint_path).relative_to(scan_dir).as_posix()
-            except ValueError as exc:
-                raise SystemExit(
-                    "Scan checkpoint must be inside the registered scan drafts directory."
-                ) from exc
-            if not re.fullmatch(r"drafts/[0-9a-fA-F-]+\.checkpoint\.json", checkpoint_relative):
-                raise SystemExit(
-                    "Scan checkpoint must be inside the registered scan drafts directory."
-                )
-            checkpoint, checkpoint_contents = _read_scan_local_json_bytes(
-                scan_dir, checkpoint_relative, "Staged scan checkpoint"
-            )
-            if checkpoint.get("scanId") != scan_id:
-                raise SystemExit("Staged scan checkpoint belongs to another scan.")
-            checkpoint_digest = hashlib.sha256(checkpoint_contents).hexdigest()
-            write_scan_local_bytes(
-                scan_dir,
-                f"checkpoints/{checkpoint_digest}.json",
-                checkpoint_contents,
-            )
         if (
             args.expected_draft_digest is not None
             and args.expected_draft_digest != _scan_draft_digest(scan_dir)
@@ -2105,6 +2087,28 @@ def write_scan_draft(db: Any, connection: Any, args: Any) -> dict[str, Any]:
             copied_manifest, copied_findings, copied_coverage, binding
         )
         _validate_completion_binding(copied_manifest, copied_findings, copied_coverage, binding)
+        if args.checkpoint_path is not None:
+            try:
+                checkpoint_relative = Path(args.checkpoint_path).relative_to(scan_dir).as_posix()
+            except ValueError as exc:
+                raise SystemExit(
+                    "Scan checkpoint must be inside the registered scan drafts directory."
+                ) from exc
+            if not re.fullmatch(r"drafts/[0-9a-fA-F-]+\.checkpoint\.json", checkpoint_relative):
+                raise SystemExit(
+                    "Scan checkpoint must be inside the registered scan drafts directory."
+                )
+            checkpoint, checkpoint_contents = _read_scan_local_json_bytes(
+                scan_dir, checkpoint_relative, "Staged scan checkpoint"
+            )
+            if checkpoint.get("scanId") != scan_id:
+                raise SystemExit("Staged scan checkpoint belongs to another scan.")
+            checkpoint_digest = hashlib.sha256(checkpoint_contents).hexdigest()
+            write_scan_local_bytes(
+                scan_dir,
+                f"checkpoints/{checkpoint_digest}.json",
+                checkpoint_contents,
+            )
         checkpoint = _parent_scan_draft(scan_id, manifest["scan"], findings, coverage)
         checkpoint_contents = _encoded(checkpoint)
         checkpoint_name = f"{hashlib.sha256(checkpoint_contents).hexdigest()}.json"

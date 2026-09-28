@@ -1073,8 +1073,13 @@ async function readPreviousScanDraft(
   const scan = requireObject(manifest.scan, "previous scan draft.scan");
   return {
     digest,
-    modifiedMs: Number(
-      (await fs.lstat(join(context.root, "coverage.json"))).mtimeMs,
+    // A partially published document set must not outrank its checkpoint.
+    modifiedMs: Math.min(
+      ...(await Promise.all(
+        names.map(async (name) =>
+          Number((await fs.lstat(join(context.root, name))).mtimeMs),
+        ),
+      )),
     ),
     input: parsePersistedCheckpoint({
       scanId: context.scanId,
@@ -1612,6 +1617,13 @@ export async function getCodexSecurityCompletedScan(
 
 export function parseScanDraft(input: ScanDraftInput): ScanDraftInput {
   const parsed = parseScanDraftDocument(input);
+  const deferredIds = new Set<string>();
+  for (const row of parsed.coverage.deferred as JsonObject[]) {
+    if (typeof row.id !== "string") continue;
+    if (deferredIds.has(row.id))
+      throw new Error(`scan draft: coverage.deferred repeats ${row.id}.`);
+    deferredIds.add(row.id);
+  }
   if (parsed.complete === false && resolvedDeferred(parsed.coverage).length > 0)
     throw new Error(
       "scan draft: coverage.resolvedDeferred is allowed only on a terminal draft.",

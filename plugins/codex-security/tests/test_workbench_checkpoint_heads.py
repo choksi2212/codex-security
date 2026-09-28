@@ -278,9 +278,22 @@ def test_legacy_live_head_sources_keep_their_recorded_digest(
 
 
 @pytest.mark.parametrize("evidence", ["deferred", "reported"])
-@pytest.mark.parametrize("head_time", [200, 50, 100], ids=["newer", "older", "tied"])
+@pytest.mark.parametrize(
+    ("destination", "head_time"),
+    [
+        ("findings.json", 200),
+        ("findings.json", 50),
+        ("findings.json", 100),
+        ("coverage.json", 200),
+        ("scan-manifest.json", 200),
+    ],
+)
 def test_parent_head_selection_matches_frozen_publication_retry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, evidence: str, head_time: int
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    evidence: str,
+    head_time: int,
+    destination: str,
 ) -> None:
     from test_workbench_saved_source_order import call_workbench
 
@@ -341,7 +354,8 @@ def test_parent_head_selection_matches_frozen_publication_retry(
     original_head = json.loads((scan_dir / "checkpoint-head.json").read_text())
     original_checkpoint = scan_dir / "checkpoints" / original_head["checkpoint"]
     os.utime(original_checkpoint, ns=(100, 100))
-    os.utime(scan_dir / "coverage.json", ns=(100, 100))
+    for filename in ("findings.json", "coverage.json", "scan-manifest.json"):
+        os.utime(scan_dir / filename, ns=(100, 100))
     select(scan_dir, original_checkpoint, 100)
 
     terminal = copy.deepcopy(initial)
@@ -363,7 +377,7 @@ def test_parent_head_selection_matches_frozen_publication_retry(
     write_bytes = saved.write_scan_local_bytes
 
     def fail_canonical_write(root, relative, contents):
-        if relative == "findings.json":
+        if relative == destination:
             raise OSError("injected canonical write failure")
         write_bytes(root, relative, contents)
 
@@ -376,7 +390,10 @@ def test_parent_head_selection_matches_frozen_publication_retry(
     assert terminal_checkpoint != original_checkpoint
     os.utime(terminal_checkpoint, ns=(head_time, head_time))
     select(scan_dir, terminal_checkpoint, head_time)
-    assert json.loads((scan_dir / "coverage.json").read_text()) == initial["coverage"]
+    assert (
+        json.loads((scan_dir / "coverage.json").read_text())
+        == (terminal if destination == "scan-manifest.json" else initial)["coverage"]
+    )
 
     first = []
 

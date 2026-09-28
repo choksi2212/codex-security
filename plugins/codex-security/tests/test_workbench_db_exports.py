@@ -1488,10 +1488,38 @@ def test_parent_draft_preserves_reconciled_candidate_identity_before_publication
         assert retained_raw.read_bytes() == raw_bytes
         canonical = json.loads((scan_dir / "coverage.json").read_text())
         assert [row["id"] for row in canonical["deferred"]] == ["review-b"]
+        pending = {"id": "stale-review", "reason": "A new caller remains."}
+        documents["coverage"]["deferred"].append(pending)
+        raw["coverage"]["deferred"] = [pending]
+        raw_path.write_text(json.dumps(raw))
+        staged.write_text(json.dumps(documents))
+        db.write_scan_draft(connection, args)
         head_bytes = (scan_dir / "checkpoint-head.json").read_bytes()
         checkpoints = set((scan_dir / "checkpoints").iterdir())
+        # A rejected write must not leave a fresh closure for stopped recovery.
+        raw["coverage"]["deferred"] = []
+        raw["coverage"]["resolvedDeferred"] = [
+            {"id": "stale-review", "reason": "An outdated observation closed this task."}
+        ]
+        raw_path.write_text(json.dumps(raw))
         args.expected_draft_digest = "0" * 64
         with pytest.raises(SystemExit, match="scan_draft_conflict"):
             db.write_scan_draft(connection, args)
         assert (scan_dir / "checkpoint-head.json").read_bytes() == head_bytes
         assert set((scan_dir / "checkpoints").iterdir()) == checkpoints
+        args.expected_draft_digest = None
+        target = documents["manifest"]["scan"]["target"]
+        documents["manifest"]["scan"]["target"] = None
+        staged.write_text(json.dumps(documents))
+        with pytest.raises(results.ContractError, match="target"):
+            db.write_scan_draft(connection, args)
+        assert (scan_dir / "checkpoint-head.json").read_bytes() == head_bytes
+        assert set((scan_dir / "checkpoints").iterdir()) == checkpoints
+        documents["manifest"]["scan"]["target"] = target
+        documents["coverage"]["deferred"].remove(pending)
+        documents["coverage"]["resolvedDeferred"] = raw["coverage"]["resolvedDeferred"]
+        staged.write_text(json.dumps(documents))
+        db.write_scan_draft(connection, args)
+        canonical = json.loads((scan_dir / "coverage.json").read_text())
+        assert [row["id"] for row in canonical["deferred"]] == ["review-b"]
+        assert canonical["resolvedDeferred"] == raw["coverage"]["resolvedDeferred"]
