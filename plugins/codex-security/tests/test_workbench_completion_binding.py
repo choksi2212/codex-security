@@ -636,14 +636,19 @@ def test_completion_keeps_invalid_prewrite_drafts_resumable(
     assert completed["findingCount"] == 1
 
 
+@pytest.mark.parametrize("invalid_inventory", [None, "", "invalid_strategy", 42])
 def test_completion_keeps_recoverable_prewrite_failures_resumable(
     tmp_path: Path,
+    invalid_inventory: str | int | None,
 ) -> None:
     state_dir, scan_id, scan_dir = _start_scan_with_draft_findings(tmp_path)
     coverage_path = scan_dir / "coverage.json"
     coverage = json.loads(coverage_path.read_text())
     inventory_strategy = coverage["inventoryStrategy"]
-    coverage["inventoryStrategy"] = ""
+    if invalid_inventory is None:
+        coverage.pop("inventoryStrategy")
+    else:
+        coverage["inventoryStrategy"] = invalid_inventory
     coverage_path.write_text(json.dumps(coverage))
 
     failed = run_workbench(
@@ -656,6 +661,7 @@ def test_completion_keeps_recoverable_prewrite_failures_resumable(
 
     assert failed["returncode"] != 0
     assert "inventoryStrategy" in str(failed["stderr"])
+    assert not (scan_dir / "checkpoint-head.json").exists()
     pending = run_workbench(state_dir, "get-scan", "--scan-id", scan_id)["scan"]
     assert pending["progress"]["status"] == "running"
     coverage["inventoryStrategy"] = inventory_strategy

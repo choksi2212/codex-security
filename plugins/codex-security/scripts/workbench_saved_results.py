@@ -31,6 +31,7 @@ from finalize_scan_contract import (
     _read_scan_local_json_with_metadata,
     _recover_unsealed_findings,
     _remove_scan_local_file_if_exists,
+    _require_str,
     _validate_completion_binding,
     _validate_resolved_deferred,
     _validate_schema_node,
@@ -867,6 +868,21 @@ def merge_saved_results(
                     for name in ("findings.json", "coverage.json", "scan-manifest.json")
                 )
             if not parent_scan.get("sealedAt") or allow_frozen_legacy_parent:
+                if (
+                    head_modified is None
+                    and not stopped
+                    and binding["coverageMode"] != "deep_repository"
+                ):
+                    # Do not turn a rejected file-authored inventory into an accepted
+                    # head: a later repair may leave the other documents untouched.
+                    coverage_schema = _read_json(
+                        Path(__file__).resolve().parent.parent / "schemas" / "coverage.schema.json"
+                    )
+                    _validate_schema_node(
+                        _require_str(parent["coverage"], "inventoryStrategy", "coverage"),
+                        coverage_schema["properties"]["inventoryStrategy"],
+                        "coverage.schema.inventoryStrategy",
+                    )
                 head_path = scan_dir / "checkpoint-head.json"
                 tied_observations = False
                 if head_modified == parent_modified:
