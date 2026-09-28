@@ -3855,12 +3855,12 @@ def test_selected_candidate_outcome_keeps_its_evidence(
     )
     assert result is not None
     assert candidate not in result[2]["deferred"]
-    assert result[2]["surfaces"] == [rejection]
+    assert result[2]["surfaces"] == [rejection, unrelated]
     replay = replay_saved_results(
         module, result, tmp_path, pending["scanId"], binding, workers, stopped=stopped
     )
     assert replay is not None
-    assert replay[2]["surfaces"] == [rejection]
+    assert replay[2]["surfaces"] == [rejection, unrelated]
     assert candidate not in replay[2]["deferred"]
     if outcome == "reported":
         for documents in (result, replay):

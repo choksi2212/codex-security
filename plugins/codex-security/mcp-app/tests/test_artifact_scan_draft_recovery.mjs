@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   mkdir,
@@ -12,6 +13,8 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual, promisify } from "node:util";
 import {
   draftApi,
   fixture,
@@ -20,6 +23,7 @@ import {
 
 const { recordCodexSecurityScanDraftViaWorkbench, saveScanDraftCheckpoint } =
   draftApi;
+const execFileAsync = promisify(execFile);
 const generic = { reason: "Review remains.", paths: ["src/example.py"] };
 const close = (id, reason = "Review completed.") => ({ id, reason });
 const findingFor = (candidateId) => ({
@@ -33,6 +37,104 @@ const findingFor = (candidateId) => ({
   remediation: "Complete the review.",
   provenance: { source: "local_plugin", candidateId },
 });
+
+for (const headTime of [1, 2, 3]) {
+  test(`worker: stopped recovery retains accepted coverage with head time ${headTime}`, async (t) => {
+    const f = await fixture(t, "worker");
+    const surface = (id) => ({
+      id,
+      label: id,
+      disposition: "no_issue_found",
+      receiptRefs: [],
+    });
+    await f.write(f.draft({ surfaces: [surface("existing")] }, true));
+    const added = {
+      surfaces: [surface("newly-reviewed")],
+      explicitExclusions: [
+        { pattern: "vendor/**", reason: "External dependency." },
+      ],
+      openQuestions: [
+        { question: "Should a later review include dependencies?" },
+      ],
+    };
+    const resultPath = path.join(f.root, "result.json");
+    await interruptDraftWrite(resultPath, () =>
+      f.write(
+        f.draft(
+          { ...added, surfaces: [surface("existing"), ...added.surfaces] },
+          true,
+        ),
+      ),
+    );
+    const headPath = path.join(f.root, "checkpoint-head.json");
+    const head = JSON.parse(await readFile(headPath, "utf8"));
+    const selectedPath = path.join(f.root, "checkpoints", head.checkpoint);
+    const selected = JSON.parse(await readFile(selectedPath, "utf8"));
+    assert.deepEqual(selected.coverage.surfaces, [
+      surface("existing"),
+      ...added.surfaces,
+    ]);
+    await utimes(resultPath, 2, 2);
+    await utimes(headPath, headTime, headTime);
+    await utimes(selectedPath, headTime, headTime);
+    const originals = new Map();
+    for (const filename of [
+      resultPath,
+      headPath,
+      ...(await readdir(path.join(f.root, "checkpoints"))).map((name) =>
+        path.join(f.root, "checkpoints", name),
+      ),
+    ]) {
+      originals.set(
+        filename,
+        createHash("sha256")
+          .update(await readFile(filename))
+          .digest("hex"),
+      );
+    }
+    const { stdout } = await execFileAsync(
+      process.env.PYTHON?.trim() || "python3",
+      [
+        "-c",
+        `import json,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from workbench_saved_results import merge_saved_results
+root,output=Path(sys.argv[2]),Path(sys.argv[3])
+worker={"id":"worker","kind":"discovery","artifact_dir":str(output),"result_manifest_path":None,"attempt":1}
+binding={"status":"interrupted","allowedTargetKinds":["git_revision"],"target":{"kind":"git_revision","repository":"synthetic","revision":"head"},"scope":{"includePaths":["."],"excludePaths":[]},"coverageMode":"repository"}
+first=merge_saved_results(root,sys.argv[4],binding,[worker],[],stopped=True,reason="interrupted")
+replay=merge_saved_results(root,sys.argv[4],binding,[worker],[],stopped=True,reason="interrupted",frozen_source_digests=first[0]["scan"]["preservedSources"])
+print(json.dumps([first[2],replay[2]]))`,
+        fileURLToPath(new URL("../../scripts", import.meta.url)),
+        path.dirname(f.root),
+        f.root,
+        f.context.scanId,
+      ],
+    );
+    const [coverage, replay] = JSON.parse(stdout);
+    assert.deepEqual(replay, coverage);
+    for (const [field, rows] of Object.entries(added)) {
+      assert.equal(
+        (coverage[field] ?? []).some((row) =>
+          Object.entries(rows[0]).every(([key, value]) =>
+            isDeepStrictEqual(row[key], value),
+          ),
+        ),
+        headTime >= 2,
+      );
+    }
+    assert.ok(coverage.surfaces.some((row) => row.id === "existing"));
+    for (const [filename, digest] of originals) {
+      assert.equal(
+        createHash("sha256")
+          .update(await readFile(filename))
+          .digest("hex"),
+        digest,
+      );
+    }
+  });
+}
 
 for (const updateSavedSurface of [false, true]) {
   test(`worker: repeated progress preserves independent evidence, saved surface update=${updateSavedSurface}`, async (t) => {

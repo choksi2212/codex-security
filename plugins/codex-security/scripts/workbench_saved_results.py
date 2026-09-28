@@ -1499,7 +1499,14 @@ def merge_saved_results(
             and relative != "parent"
             and source_order[relative] <= (0, parent_modified)
             and (not stopped_parent_seal or relative in parent_preserved_sources)
-        ) or (relative not in current_results and worker_result_order is not None)
+        ) or (
+            relative not in current_results
+            and worker_result_order is not None
+            and (
+                relative not in selected_observations
+                or source_order[relative] < worker_result_order
+            )
+        )
         # A failed result write can leave pending work outside the accepted result.
         accepted_order = (
             (0, parent_modified)

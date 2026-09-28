@@ -520,3 +520,63 @@ def test_parent_head_selection_matches_frozen_publication_retry(
                 )
     assert replay[0]["findings"] == first[0][0]["findings"]
     assert replay[1] == first[0][1]
+
+
+@pytest.mark.parametrize("head_time", [100, 200, 300])
+def test_selected_worker_checkpoint_preserves_terminal_coverage(
+    tmp_path: Path, checkpoint_scan, head_time: int
+) -> None:
+    scan_id, _, _, binding = checkpoint_scan
+    surface = {
+        "id": "existing",
+        "label": "Existing",
+        "disposition": "no_issue_found",
+        "receiptRefs": [],
+    }
+    result = saved_draft(scan_id, surfaces=[surface], complete=True)
+    selected = copy.deepcopy(result)
+    additions = {
+        "surfaces": [{**surface, "id": "newly-reviewed", "label": "Newly reviewed"}],
+        "explicitExclusions": [{"pattern": "vendor/**", "reason": "External dependency."}],
+        "openQuestions": [{"question": "Should a later review include dependencies?"}],
+    }
+    for field, rows in additions.items():
+        selected["coverage"].setdefault(field, []).extend(rows)
+    output = tmp_path / "worker"
+    output.mkdir()
+    result_path = output / "result.json"
+    result_path.write_text(json.dumps(result))
+    os.utime(result_path, ns=(200, 200))
+    checkpoint = write_checkpoint(output / "checkpoints", selected)
+    os.utime(checkpoint, ns=(head_time, head_time))
+    head = output / "checkpoint-head.json"
+    head.write_text(json.dumps({"checkpoint": checkpoint.name}))
+    os.utime(head, ns=(head_time, head_time))
+    unselected = write_checkpoint(
+        output / "checkpoints",
+        saved_draft(
+            scan_id,
+            surfaces=[{**surface, "id": "unselected", "label": "Unselected"}],
+            complete=True,
+        ),
+    )
+    os.utime(unselected, ns=(400, 400))
+    original_bytes = {
+        path: path.read_bytes() for path in (result_path, checkpoint, head, unselected)
+    }
+    workers = [saved_discovery_worker(output)]
+    first = saved.merge_saved_results(
+        tmp_path, scan_id, binding, workers, [], stopped=True, reason="interrupted"
+    )
+    replay = replay_saved_results(saved, first, tmp_path, scan_id, binding, workers, stopped=True)
+    for documents in (first, replay):
+        coverage = documents[2]
+        assert surface in coverage["surfaces"]
+        assert not any(row["id"] == "unselected" for row in coverage["surfaces"])
+        for field, rows in additions.items():
+            assert any(
+                all(row.get(key) == value for key, value in rows[0].items())
+                for row in coverage.get(field, [])
+            ) is (head_time >= 200)
+    assert replay[2] == first[2]
+    assert all(path.read_bytes() == contents for path, contents in original_bytes.items())
