@@ -868,21 +868,26 @@ def merge_saved_results(
                     for name in ("findings.json", "coverage.json", "scan-manifest.json")
                 )
             if not parent_scan.get("sealedAt") or allow_frozen_legacy_parent:
+                publish_head = True
                 if (
                     head_modified is None
                     and not stopped
                     and binding["coverageMode"] != "deep_repository"
+                    and parent["coverage"]
                 ):
                     # Do not turn a rejected file-authored inventory into an accepted
-                    # head: a later repair may leave the other documents untouched.
+                    # head. Retain its raw evidence and let finalization validate it.
                     coverage_schema = _read_json(
                         Path(__file__).resolve().parent.parent / "schemas" / "coverage.schema.json"
                     )
-                    _validate_schema_node(
-                        _require_str(parent["coverage"], "inventoryStrategy", "coverage"),
-                        coverage_schema["properties"]["inventoryStrategy"],
-                        "coverage.schema.inventoryStrategy",
-                    )
+                    try:
+                        _validate_schema_node(
+                            _require_str(parent["coverage"], "inventoryStrategy", "coverage"),
+                            coverage_schema["properties"]["inventoryStrategy"],
+                            "coverage.schema.inventoryStrategy",
+                        )
+                    except ContractError:
+                        publish_head = False
                 head_path = scan_dir / "checkpoint-head.json"
                 tied_observations = False
                 if head_modified == parent_modified:
@@ -902,7 +907,9 @@ def merge_saved_results(
                     write_scan_local_bytes(scan_dir, parent_checkpoint, payload)
                     # A recovery copy must not appear newer than the review it copies.
                     os.utime(checkpoint_path, ns=(parent_modified, parent_modified))
-                if head_modified is None or head_modified < parent_modified or tied_observations:
+                if publish_head and (
+                    head_modified is None or head_modified < parent_modified or tied_observations
+                ):
                     write_scan_local_bytes(
                         scan_dir,
                         "checkpoint-head.json",

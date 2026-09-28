@@ -671,6 +671,20 @@ def test_completion_keeps_recoverable_prewrite_failures_resumable(
     assert completed["findingCount"] == 1
 
 
+def test_completion_keeps_empty_coverage_defaults(tmp_path: Path) -> None:
+    state_dir, scan_id, scan_dir = _start_scan_with_draft_findings(tmp_path)
+    coverage_path = scan_dir / "coverage.json"
+    coverage_path.write_text("{}")
+
+    completed = run_workbench(state_dir, "complete-scan", "--scan-id", scan_id)["scan"]
+
+    assert completed["progress"]["status"] == "complete"
+    assert completed["findingCount"] == 1
+    coverage = json.loads(coverage_path.read_text())
+    assert coverage["inventoryStrategy"] == "repository"
+    assert coverage["completeness"] == "partial"
+
+
 def test_deep_completion_derives_inventory_without_downgrading_coverage(
     tmp_path: Path,
 ) -> None:
