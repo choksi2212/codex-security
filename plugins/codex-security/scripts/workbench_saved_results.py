@@ -842,11 +842,8 @@ def merge_saved_results(
     if frozen_source_digests is None or allow_frozen_legacy_parent:
         try:
             parent_manifest, parent = _read_saved_parent_result(scan_dir, scan_id)
-            # A partially published document set must not outrank its checkpoint.
-            parent_modified = min(
-                (scan_dir / name).lstat().st_mtime_ns
-                for name in ("findings.json", "coverage.json", "scan-manifest.json")
-            )
+            # Without an accepted head, file-authored coverage is a full replacement.
+            parent_modified = (scan_dir / "coverage.json").lstat().st_mtime_ns
             parent_is_canonical = True
         except (ContractError, OSError, ValueError) as exc:
             if not stopped:
@@ -857,14 +854,20 @@ def merge_saved_results(
             parent = None
         if parent_manifest is not None and parent is not None:
             parent_scan = parent_manifest["scan"]
+            try:
+                previous_head, _, head_modified = _read_saved_result_observation(
+                    scan_dir, "checkpoint-head.json", scan_id
+                )
+            except (ContractError, OSError, ValueError):
+                head_modified = None
+            if head_modified is not None:
+                # A partial tool publication must not outrank its accepted head.
+                parent_modified = min(
+                    (scan_dir / name).lstat().st_mtime_ns
+                    for name in ("findings.json", "coverage.json", "scan-manifest.json")
+                )
             if not parent_scan.get("sealedAt") or allow_frozen_legacy_parent:
                 head_path = scan_dir / "checkpoint-head.json"
-                try:
-                    previous_head, _, head_modified = _read_saved_result_observation(
-                        scan_dir, "checkpoint-head.json", scan_id
-                    )
-                except (ContractError, OSError, ValueError):
-                    head_modified = None
                 tied_observations = False
                 if head_modified == parent_modified:
                     previous_parent, _ = _read_saved_result(
@@ -1090,6 +1093,38 @@ def merge_saved_results(
     if parent is None and latest_reducer is not None:
         parent = drafts_by_path[latest_reducer]
 
+    all_sources = ([("parent", parent, None)] if parent else []) + sources
+    # Older checkpoints can omit task IDs already assigned in their published output.
+    named_deferred: dict[str | None, list[dict[str, Any]]] = {}
+    for _, draft, owner in all_sources:
+        named_deferred.setdefault(owner, []).extend(
+            row
+            for row in _deferred_rows(draft["coverage"])
+            if isinstance(row, dict) and isinstance(row.get("id"), str)
+        )
+    for _, draft, owner in all_sources:
+        rows = _deferred_rows(draft["coverage"])
+        reserved = {
+            row["id"] for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str)
+        }
+        for row in rows:
+            if not isinstance(row, dict) or any(
+                key in row for key in ("id", "candidateId", "candidate", "finding")
+            ):
+                continue
+            identity = next(
+                (
+                    named["id"]
+                    for named in named_deferred[owner]
+                    if named["id"] not in reserved
+                    and {key: value for key, value in named.items() if key != "id"} == row
+                ),
+                None,
+            )
+            if identity is not None:
+                row["id"] = identity
+                reserved.add(identity)
+
     if parent is None and not sources:
         return None
     if (
@@ -1187,7 +1222,6 @@ def merge_saved_results(
         return bool(document["findings"])
 
     source_order["parent"] = (0, parent_modified)
-    all_sources = ([("parent", parent, None)] if parent else []) + sources
     deferred_rows = {
         relative: _deferred_rows(draft["coverage"]) for relative, draft, _ in all_sources
     }

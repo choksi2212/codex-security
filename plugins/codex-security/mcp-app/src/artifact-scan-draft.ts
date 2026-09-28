@@ -365,6 +365,38 @@ async function preserveScanDraft(
   );
   const savedSources = [...current, ...archived];
   const sources = savedSources.map(({ input }) => input);
+  // Older checkpoints can omit task IDs already assigned in their published output.
+  const savedDeferred = sources.flatMap(
+    (source) => source.coverage.deferred as JsonObject[],
+  );
+  for (const source of sources) {
+    const reservedIds = new Set(
+      (source.coverage.deferred as JsonObject[]).flatMap((row) =>
+        typeof row.id === "string" ? [row.id] : [],
+      ),
+    );
+    source.coverage.deferred = normalizeDeferred(
+      (source.coverage.deferred as JsonObject[]).map((row) => {
+        if (
+          typeof row.id === "string" ||
+          "candidateId" in row ||
+          "candidate" in row ||
+          "finding" in row
+        )
+          return row;
+        const matching = savedDeferred.find(
+          ({ id, ...content }) =>
+            typeof id === "string" &&
+            !reservedIds.has(id) &&
+            isDeepStrictEqual(content, row),
+        );
+        if (matching === undefined) return row;
+        const id = matching.id as string;
+        reservedIds.add(id);
+        return { ...row, id };
+      }),
+    );
+  }
   const retainedFinal =
     input.complete === false
       ? savedSources.find(({ input }) => input.complete !== false)
@@ -815,10 +847,13 @@ function reconcileDeferredSurfaces(
   );
   const carriesCandidate = (surface: JsonObject) =>
     "candidateId" in surface || "candidate" in surface || "finding" in surface;
-  const pending = [
-    ...(coverage.deferred as JsonObject[]),
-    ...sources.flatMap((source) => source.coverage.deferred as JsonObject[]),
-  ].filter(
+  const latestDeferred = [...(coverage.deferred as JsonObject[])];
+  for (const source of sources) {
+    for (const row of source.coverage.deferred as JsonObject[]) {
+      if (!deferredEntryPresent(latestDeferred, row)) latestDeferred.push(row);
+    }
+  }
+  const pending = latestDeferred.filter(
     (row) =>
       !closedDeferredIds.has(row.id as string) &&
       !resolvedCandidateIds.has((row.candidateId ?? row.id) as string),
@@ -1085,14 +1120,17 @@ async function readPreviousScanDraft(
   const scan = requireObject(manifest.scan, "previous scan draft.scan");
   return {
     digest,
-    // A partially published document set must not outrank its checkpoint.
-    modifiedMs: Math.min(
-      ...(await Promise.all(
-        names.map(async (name) =>
-          Number((await fs.lstat(join(context.root, name))).mtimeMs),
-        ),
-      )),
-    ),
+    // File-authored coverage may leave its manifest unchanged; tool writes have a head.
+    modifiedMs:
+      (await readCheckpointHead(context, "current")) === undefined
+        ? Number((await fs.lstat(join(context.root, "coverage.json"))).mtimeMs)
+        : Math.min(
+            ...(await Promise.all(
+              names.map(async (name) =>
+                Number((await fs.lstat(join(context.root, name))).mtimeMs),
+              ),
+            )),
+          ),
     input: parsePersistedCheckpoint({
       scanId: context.scanId,
       ...(scan.complete === false ? { complete: false } : {}),
@@ -1668,11 +1706,7 @@ export function parsePersistedScanDraft(
     if (!isObject(finding)) continue;
     normalizePersistedFindingDetails(finding);
   }
-  const parsed = parseScanDraftDocument(compatible);
-  parsed.coverage.deferred = normalizeDeferred(
-    parsed.coverage.deferred as JsonObject[],
-  );
-  return parsed;
+  return parseScanDraftDocument(compatible);
 }
 
 function parsePersistedCheckpoint(

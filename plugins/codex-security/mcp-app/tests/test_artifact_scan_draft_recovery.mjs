@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   mkdir,
   readFile,
@@ -248,6 +249,46 @@ for (const outcome of ["rejected", "reported"]) {
 }
 
 for (const layout of ["standard", "diff", "worker"]) {
+  test(`${layout}: moving a saved task stops blocking its former surface`, async (t) => {
+    const f = await fixture(t, layout);
+    const first = {
+      id: "first",
+      label: "First",
+      disposition: "needs_follow_up",
+    };
+    const second = {
+      id: "second",
+      label: "Second",
+      disposition: "needs_follow_up",
+    };
+    const a = { id: "a", ...generic, surfaceIds: [first.id] };
+    const b = { id: "b", ...generic, surfaceIds: [first.id] };
+    await f.write(f.draft({ surfaces: [first, second], deferred: [a, b] }));
+    const moved = { ...a, surfaceIds: [second.id] };
+    await f.write(f.draft({ deferred: [moved] }));
+    for (const input of [
+      f.draft(
+        {
+          surfaces: [{ ...first, disposition: "no_issue_found" }],
+          resolvedDeferred: [close(b.id)],
+        },
+        true,
+      ),
+      f.draft({}, true),
+    ]) {
+      const result = await f.write(input);
+      assert.deepEqual(result.coverage.deferred, [moved]);
+      assert.equal(
+        result.coverage.surfaces.find(({ id }) => id === first.id).disposition,
+        "no_issue_found",
+      );
+      assert.equal(
+        result.coverage.surfaces.find(({ id }) => id === second.id).disposition,
+        "needs_follow_up",
+      );
+    }
+  });
+
   test(`${layout}: a legacy ID-less checkpoint retains one closable task`, async (t) => {
     const f = await fixture(t, layout);
     await saveScanDraftCheckpoint(
@@ -729,6 +770,59 @@ for (const layout of ["standard", "diff", "worker"]) {
       await f.write(f.draft({}, true));
       assert.deepEqual((await f.read()).deferred, []);
       assert.deepEqual((await f.read()).resolvedDeferred, [close(pending.id)]);
+    });
+  }
+}
+
+for (const layout of ["standard", "diff"]) {
+  for (const taskCount of [1, 2]) {
+    test(`${layout}: an upgraded checkpoint retains ${taskCount} older canonical task IDs`, async (t) => {
+      const f = await fixture(t, layout);
+      await f.write(f.draft({ deferred: [generic] }));
+      const legacyId = `deferred-${createHash("sha256")
+        .update(JSON.stringify([generic.reason, generic.paths, []]))
+        .digest("hex")
+        .slice(0, 16)}`;
+      const coverage = await f.read();
+      const named = Array.from({ length: taskCount }, (_, index) => ({
+        id: index === 0 ? legacyId : `${legacyId}-${index + 1}`,
+        paths: generic.paths,
+        reason: generic.reason,
+      }));
+      coverage.deferred = named;
+      await writeFile(
+        path.join(f.root, "coverage.json"),
+        JSON.stringify(coverage),
+      );
+      await rm(path.join(f.root, "checkpoint-head.json"), { force: true });
+      await rm(path.join(f.root, "checkpoints"), {
+        recursive: true,
+        force: true,
+      });
+      await saveScanDraftCheckpoint(
+        f.context,
+        f.draft({ deferred: Array.from({ length: taskCount }, () => generic) }),
+        false,
+      );
+      const resumed = await f.write(f.draft({}, true));
+      assert.deepEqual(resumed.coverage.deferred, named);
+      const partlyClosed = await f.write(
+        f.draft({ resolvedDeferred: [close(legacyId)] }, true),
+      );
+      assert.deepEqual(partlyClosed.coverage.deferred, named.slice(1));
+      if (taskCount > 1)
+        await f.write(
+          f.draft(
+            { resolvedDeferred: named.slice(1).map(({ id }) => close(id)) },
+            true,
+          ),
+        );
+      const retried = await f.write(f.draft({}, true));
+      assert.deepEqual(retried.coverage.deferred, []);
+      assert.deepEqual(
+        new Set(retried.coverage.resolvedDeferred.map(({ id }) => id)),
+        new Set(named.map(({ id }) => id)),
+      );
     });
   }
 }

@@ -161,6 +161,53 @@ def test_recovery_keeps_one_surface_with_optional_empty_receipts(
     assert checkpoint.read_bytes() == original
 
 
+@pytest.mark.parametrize("mode", ["repository", "branch_diff"])
+@pytest.mark.parametrize("retain_pending", [False, True])
+def test_file_authored_resolution_can_leave_manifest_unchanged(
+    tmp_path: Path, checkpoint_scan, mode: str, retain_pending: bool
+) -> None:
+    scan_id, _, _, binding = checkpoint_scan
+    binding["coverageMode"] = mode
+    if mode == "branch_diff":
+        binding["allowedTargetKinds"] = ["git_diff"]
+        binding["target"] = {
+            "kind": "git_diff",
+            "repository": "synthetic",
+            "baseRevision": "a" * 40,
+            "headRevision": "b" * 40,
+        }
+    independent = {"id": "file-review", "reason": "Independent review remains."}
+    pending = saved_draft(
+        scan_id, deferred=[{"candidateId": "candidate", "reason": "Review remains."}, independent]
+    )
+    checkpoint = write_checkpoint(tmp_path / "checkpoints", pending)
+    os.utime(checkpoint, ns=(200, 200))
+    completed = saved_draft(
+        scan_id,
+        deferred=[independent] if retain_pending else [],
+        surfaces=[
+            {
+                "id": "candidate",
+                "candidateId": "candidate",
+                "label": "Candidate",
+                "disposition": "rejected",
+            }
+        ],
+        complete=True,
+    )
+    write_saved_parent(tmp_path, completed, 300)
+    manifest = tmp_path / "scan-manifest.json"
+    os.utime(manifest, ns=(100, 100))
+    warnings = []
+    result = saved.merge_saved_results(
+        tmp_path, scan_id, binding, [], warnings, stopped=False, reason=""
+    )
+    # Headless file-authored documents replace their older checkpoint coverage.
+    assert result[2]["completeness"] == ("partial" if retain_pending else "complete")
+    assert result[2]["deferred"] == ([independent] if retain_pending else [])
+    assert warnings == []
+
+
 @pytest.mark.parametrize("layout", ["parent", "worker", "archived"])
 def test_frozen_observations_survive_live_head_changes(
     tmp_path: Path, checkpoint_scan, layout: str

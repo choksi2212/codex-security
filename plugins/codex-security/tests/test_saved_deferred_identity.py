@@ -71,6 +71,67 @@ def recover(root: Path, module, workers, frozen=None):
     return result
 
 
+@pytest.mark.parametrize("reason", ["Review remains.", "Unicode review: é \ud800"])
+@pytest.mark.parametrize("task_count", [1, 2])
+def test_torn_worker_closure_reuses_observed_legacy_identity(
+    tmp_path: Path, saved_results, reason: str, task_count: int
+) -> None:
+    anonymous = {"reason": reason, "paths": ["src/example.py"]}
+    identity = "deferred-observed-review"
+    named = [
+        {
+            "id": identity if index == 0 else f"{identity}-{index + 1}",
+            "paths": anonymous["paths"],
+            "reason": reason,
+        }
+        for index in range(task_count)
+    ]
+    normalized = saved_draft("identity-scan", deferred=named)
+    worker = save_worker(
+        tmp_path,
+        saved_results,
+        "reviewer",
+        [
+            saved_draft("identity-scan", deferred=[anonymous.copy() for _ in range(task_count)]),
+            normalized,
+        ],
+        normalized,
+    )
+    other = save_worker(
+        tmp_path,
+        saved_results,
+        "other",
+        [],
+        saved_draft("identity-scan", deferred=[{**anonymous, "id": "independent-review"}]),
+    )
+    output = tmp_path / "reviewer"
+    checkpoint = write_checkpoint(
+        output / "checkpoints",
+        saved_draft(
+            "identity-scan",
+            deferred=named[1:],
+            closures=[{"id": identity, "reason": "Review completed."}],
+            complete=True,
+        ),
+    )
+    os.utime(checkpoint, ns=(1100, 1100))
+    head = output / "checkpoint-head.json"
+    head.write_text(json.dumps({"checkpoint": checkpoint.name}))
+    os.utime(head, ns=(1200, 1200))
+    originals = {path: path.read_bytes() for path in output.rglob("*.json")}
+    result = recover(tmp_path, saved_results, [worker, other])
+    replay = recover(
+        tmp_path, saved_results, [worker, other], result[0]["scan"]["preservedSources"]
+    )
+    for documents in (result, replay):
+        assert {row["id"] for row in documents[2]["deferred"]} == {
+            "independent-review",
+            "scan-stopped",
+            *(row["id"] for row in named[1:]),
+        }
+    assert all(path.read_bytes() == value for path, value in originals.items())
+
+
 def cancel_and_preserve(monkeypatch, saved_results, state, codex_home, scan_dir, scan_id):
     """Retry publication from frozen sources after the initial write fails."""
     prepared_coverage = []
