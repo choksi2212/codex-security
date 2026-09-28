@@ -126,6 +126,7 @@ def run_workbench(
     check: bool = True,
     environment: dict[str, str] | None = None,
     input_text: str | None = None,
+    umask: int = -1,
 ) -> dict[str, object]:
     completed = subprocess.run(
         [sys.executable, str(SCRIPT), *args],
@@ -138,6 +139,7 @@ def run_workbench(
         },
         input=input_text,
         text=True,
+        umask=umask,
     )
     if not check:
         return {"returncode": completed.returncode, "stderr": completed.stderr}
