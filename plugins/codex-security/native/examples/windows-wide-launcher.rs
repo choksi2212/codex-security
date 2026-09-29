@@ -59,7 +59,6 @@ fn main() -> std::io::Result<()> {
             std::os::windows::fs::symlink_file(&names[0], cwd.join("file-link"))
         })?;
         if symlinks {
-            std::os::windows::fs::symlink_file(&names[0], cwd.join("relative-link"))?;
             std::os::windows::fs::symlink_file(raw("missing-", 0xdfff), cwd.join("missing-link"))?;
             std::os::windows::fs::symlink_file(
                 Path::new("..").join(raw("missing-", 0xdfff)),
