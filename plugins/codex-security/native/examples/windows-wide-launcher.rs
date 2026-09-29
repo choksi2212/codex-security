@@ -221,7 +221,7 @@ fn main() -> std::io::Result<()> {
                 "Windows policy helper lost directory names",
             ));
         }
-        for sentinel in sentinels {
+        for sentinel in &sentinels {
             if fs::read(sentinel)? != b"output sentinel" {
                 return Err(io::Error::other(
                     "Windows policy helper changed a replacement output",
@@ -272,9 +272,10 @@ fn main() -> std::io::Result<()> {
         fs::write(
             repo.join(&input_name),
             concat!(
-                "{\"cwe_ids\":[\"CWE-89\"],\"locations\":[{\"path\":\"source.py\",",
-                "\"start_line\":1,\"role\":\"entrypoint\"}],\"summary\":\"wide paths\",",
-                "\"evidence\":\"source evidence\"}\n",
+                r#"{"cwe_ids":["CWE-89"],"locations":[{"path":"source.py","#,
+                r#""start_line":1,"role":"entrypoint"}],"summary":"wide paths","#,
+                r#""evidence":"source evidence"}"#,
+                "\n",
             ),
         )?;
         let output_link = "i\u{0307}.jsonl";
@@ -283,10 +284,11 @@ fn main() -> std::io::Result<()> {
             std::os::windows::fs::symlink_file(output_link, repo.join("İ.jsonl"))?;
         }
         let expected = concat!(
-            "{\"candidate_id\":\"candidate-a69fa65a28ed4e55\",\"cwe_ids\":[\"CWE-89\"],",
-            "\"evidence\":\"source evidence\",\"locations\":[{\"end_line\":1,",
-            "\"path\":\"source.py\",\"role\":\"entrypoint\",\"start_line\":1}],",
-            "\"summary\":\"wide paths\"}\r\n",
+            r#"{"candidate_id":"candidate-a69fa65a28ed4e55","cwe_ids":["CWE-89"],"#,
+            r#""evidence":"source evidence","locations":[{"end_line":1,"#,
+            r#""path":"source.py","role":"entrypoint","start_line":1}],"#,
+            r#""summary":"wide paths"}"#,
+            "\r\n",
         );
         let candidate = |repo_arg: &Path, input: &Path, scope: &Path, output: &Path| {
             Command::new(&node)
@@ -304,13 +306,11 @@ fn main() -> std::io::Result<()> {
                 .env("USERPROFILE", &repo)
                 .output()
         };
+        fs::write(&output, "previous output")?;
         for (index, prefix) in [repo.clone(), PathBuf::from("~"), PathBuf::from(".")]
             .into_iter()
             .enumerate()
         {
-            if index == 0 {
-                fs::write(&output, "previous output")?;
-            }
             let child = candidate(
                 &prefix,
                 &prefix.join(&input_name),
@@ -355,15 +355,11 @@ fn main() -> std::io::Result<()> {
                 ));
             }
         }
-        for cwd in &cwds {
-            for repository in &repos {
-                if fs::read(root.join(cwd).join(repository).join(&replacement_output))?
-                    != b"output sentinel"
-                {
-                    return Err(io::Error::other(
-                        "Candidate helper changed a replacement output",
-                    ));
-                }
+        for sentinel in &sentinels {
+            if fs::read(sentinel)? != b"output sentinel" {
+                return Err(io::Error::other(
+                    "Candidate helper changed a replacement output",
+                ));
             }
         }
         println!(

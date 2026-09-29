@@ -163,10 +163,9 @@ export async function recordCodexSecurityDiscoveryCandidates(
 
   try {
     await fs.chmod(temporaryDirectory, 0o700);
-    const content =
-      candidates.length === 0
-        ? ""
-        : `${candidates.map((candidate) => JSON.stringify(candidate)).join("\n")}\n`;
+    const content = candidates
+      .map((candidate) => `${JSON.stringify(candidate)}\n`)
+      .join("");
     await fs.writeFile(temporaryInput, content, {
       encoding: "utf8",
       flag: "wx",

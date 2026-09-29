@@ -834,10 +834,10 @@ describe("plugin runtime preparation", () => {
       expect(await readFile(normalizer, "utf8")).toBe(
         await readFile(join(sourcePlugin, "mcp", "helpers.mjs"), "utf8"),
       );
-      const locations: (Record<string, unknown> | null)[] = [];
+      const locations: { path: string }[] = [];
+      const input = join(root, "candidate-input.jsonl");
+      const output = join(root, "candidate-output.jsonl");
       for (const item of cases) {
-        const input = join(root, "candidate-input.jsonl");
-        const output = join(root, "candidate-output.jsonl");
         await writeFile(
           input,
           JSON.stringify({
@@ -867,17 +867,15 @@ describe("plugin runtime preparation", () => {
         expect(normalized.exitCode).toBe(safe ? 0 : 2);
         if (safe) {
           const row = JSON.parse(await readFile(output, "utf8")) as {
-            locations: Record<string, unknown>[];
+            locations: typeof locations;
           };
-          expect(row.locations[0]?.["path"]).toBe(item.path);
-          expect(
-            await readFile(
-              join(root, row.locations[0]!["path"] as string),
-              "utf8",
-            ),
-          ).toBe(item.contents);
-          locations.push(row.locations[0]!);
-        } else locations.push(null);
+          const location = row.locations[0]!;
+          expect(location.path).toBe(item.path);
+          expect(await readFile(join(root, location.path), "utf8")).toBe(
+            item.contents,
+          );
+          locations.push(location);
+        }
       }
       const result = Bun.spawnSync([
         python!,
@@ -890,13 +888,11 @@ describe("plugin runtime preparation", () => {
           "results = []",
           "for location in json.loads(sys.argv[2]):",
           "    try:",
-          "        if location is None: raise ValueError('rejected candidate')",
           "        finalizer['_validate_location']({'path': location['path'], 'startLine': location['start_line'], 'endLine': location['end_line'], 'role': location['role']}, 'candidate.locations[0]')",
           "    except ValueError:",
-          "        contract_valid = False",
+          "        results.append(False)",
           "    else:",
-          "        contract_valid = True",
-          "    results.append(contract_valid)",
+          "        results.append(True)",
           "print(json.dumps(results))",
         ].join("\n"),
         join(bundledPlugin, "scripts", "finalize_scan_contract.py"),
@@ -905,13 +901,7 @@ describe("plugin runtime preparation", () => {
 
       expect(result.exitCode).toBe(0);
       expect(JSON.parse(new TextDecoder().decode(result.stdout))).toEqual(
-        cases.map(
-          (item) =>
-            item.path.trim().length > 0 &&
-            !/^[A-Za-z]:/.test(item.path) &&
-            !item.path.includes("\\") &&
-            !/[\u0000-\u001f]/u.test(item.path),
-        ),
+        locations.map((item) => !/[\u0000-\u001f]/u.test(item.path)),
       );
     },
   );

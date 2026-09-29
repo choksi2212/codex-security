@@ -1,4 +1,4 @@
-import { decodeUtf8 } from "./utf8";
+import { compareUnicode as compare, decodeUtf8 } from "./utf8";
 import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
@@ -67,15 +67,6 @@ interface Candidate {
   evidence: string;
   context?: string;
   instance?: string;
-}
-
-function compare(left: string, right: string): number {
-  const a = Array.from(left, (value) => value.codePointAt(0)!);
-  const b = Array.from(right, (value) => value.codePointAt(0)!);
-  for (let index = 0; index < Math.min(a.length, b.length); index++) {
-    if (a[index] !== b[index]) return a[index]! - b[index]!;
-  }
-  return a.length - b.length;
 }
 
 function object(value: unknown): value is Row {

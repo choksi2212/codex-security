@@ -1,4 +1,4 @@
-import { decodeUtf8 } from "./utf8";
+import { compareUnicode, decodeUtf8 } from "./utf8";
 import {
   closeSync,
   lstatSync,
@@ -226,19 +226,6 @@ function asciiJson(value: string): string {
   );
 }
 
-function comparePaths(left: string, right: string): number {
-  let leftIndex = 0;
-  let rightIndex = 0;
-  while (leftIndex < left.length && rightIndex < right.length) {
-    const leftPoint = left.codePointAt(leftIndex)!;
-    const rightPoint = right.codePointAt(rightIndex)!;
-    if (leftPoint !== rightPoint) return leftPoint - rightPoint;
-    leftIndex += leftPoint > 0xffff ? 2 : 1;
-    rightIndex += rightPoint > 0xffff ? 2 : 1;
-  }
-  return left.length - right.length;
-}
-
 function listSecurityMd(repo: string, posixHome: string | undefined): string[] {
   const root = resolveRoot(repo, posixHome);
   const policies: string[] = [];
@@ -252,7 +239,7 @@ function listSecurityMd(repo: string, posixHome: string | undefined): string[] {
       name: decodePath(entry.name),
       entry,
     }));
-    entries.sort((left, right) => comparePaths(left.name, right.name));
+    entries.sort((left, right) => compareUnicode(left.name, right.name));
     for (const { bytes, name, entry: listedEntry } of entries) {
       if (name === ".git") continue;
       const path = appendPath(directory, bytes);
@@ -289,7 +276,7 @@ function listSecurityMd(repo: string, posixHome: string | undefined): string[] {
     }
   }
   walk(root, "");
-  return policies.sort(comparePaths);
+  return policies.sort(compareUnicode);
 }
 
 function readPolicy(path: Buffer, displayedPath: Buffer): string {

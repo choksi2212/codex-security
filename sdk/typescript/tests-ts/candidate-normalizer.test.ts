@@ -343,6 +343,7 @@ describe("built candidate normalizer", () => {
   test("rejects invalid line values, malformed rows, and invalid UTF-8 atomically", () => {
     const f = fixture();
     const input = join(f.root, "raw.jsonl");
+    write(f.output, "previous output\n");
     for (const number of [
       "1.5",
       "true",
@@ -360,7 +361,6 @@ describe("built candidate normalizer", () => {
           `"start_line":${number}`,
         ) + "\n",
       );
-      write(f.output, "previous output\n");
       const result = invoke(f, [input]);
       expect(result.status).toBe(2);
       expect(result.stderr).toContain("row 1:");
@@ -385,7 +385,9 @@ describe("built candidate normalizer", () => {
       '{"locations":',
       "\ufeff{}",
       Buffer.from([0xff]),
-      JSON.stringify(candidate([], { summary: "\ud800" })),
+      ...["summary", "evidence"].map((field) =>
+        JSON.stringify(candidate(undefined, { [field]: "\ud800" })),
+      ),
     ]) {
       write(input, invalid);
       const result = invoke(f, [input]);
@@ -394,11 +396,6 @@ describe("built candidate normalizer", () => {
     }
     write(input, JSON.stringify(candidate()) + "\r\n\rnot-json\n");
     expect(invoke(f, [input]).stderr).toContain("raw.jsonl row 3:");
-    write(
-      input,
-      JSON.stringify(candidate(undefined, { evidence: "\ud800" })) + "\n",
-    );
-    expect(invoke(f, [input]).status).toBe(2);
     expect(readFileSync(f.output, "utf8")).toBe("previous output\n");
     expect(readdirSync(f.root).some((name) => name.endsWith(".tmp"))).toBe(
       false,
@@ -478,8 +475,8 @@ describe("built candidate normalizer", () => {
         "instance: expected a non-empty string",
       ],
     ];
+    write(f.output, "previous output\n");
     for (const [row, message] of cases) {
-      write(f.output, "previous output\n");
       const result = run(f, [[candidate(), row]]);
       expect(result.status).toBe(2);
       expect(result.stderr).toContain("candidates-0.jsonl row 2:");
@@ -494,8 +491,8 @@ describe("built candidate normalizer", () => {
       const f = fixture();
       write(join(f.repo, "\ufffd.py"), "replacement sibling\n");
       write(f.scope, "\ufffd.py\n");
+      write(f.output, "previous output\n");
       for (const name of ["\ud800.py", "\udc00.py"]) {
-        write(f.output, "previous output\n");
         const result = run(f, [[candidate([location(name, 1)])]]);
         expect(result.status).toBe(2);
         expect(result.stderr).toContain("unpaired surrogate");
