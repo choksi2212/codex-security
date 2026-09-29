@@ -98,7 +98,7 @@ export function fakePreflight(
     mode: "standard",
     outputDir: null,
     authentication: { method: "stored_credentials", verified: false },
-    model: "gpt-5.6-sol",
+    model: "gpt-6-sol",
     reasoningEffort: "xhigh",
   };
 }
@@ -271,7 +271,7 @@ export function dependencies(
         args,
         repository,
         commandOptions,
-      )) ?? "",
+      )) ?? (args.includes("--name-only") ? "src/finding-1.ts\0" : ""),
     ...(options.bulkScan === undefined ? {} : { bulkScan: options.bulkScan }),
     ...(options.linearClient === undefined
       ? {}
