@@ -784,6 +784,8 @@ describe("plugin runtime preparation", () => {
       expect(python).not.toBeNull();
       const bundledPlugin = await bundledPluginRoot();
       const normalizer = join(bundledPlugin, "mcp", "helpers.mjs");
+      const node = Bun.which("node");
+      expect(node).not.toBeNull();
       const locations: { path: string }[] = [];
       const input = join(root, "candidate-input.jsonl");
       const output = join(root, "candidate-output.jsonl");
@@ -798,7 +800,7 @@ describe("plugin runtime preparation", () => {
           }) + "\n",
         );
         const normalized = Bun.spawnSync([
-          process.execPath,
+          node!,
           normalizer,
           "normalize-candidates",
           "--input",
