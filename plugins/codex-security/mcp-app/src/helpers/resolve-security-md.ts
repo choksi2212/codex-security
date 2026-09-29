@@ -10,7 +10,7 @@ import {
   type Stats,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, parse, sep } from "node:path";
+import { basename, dirname, parse, sep, win32 } from "node:path";
 import { parseArgs } from "node:util";
 import { unixBinding, windowsBinding } from "../native";
 import { windowsFileSystem } from "../../../native/windows-files.mjs";
@@ -56,6 +56,18 @@ function windowsParts(value: string): [string, string, string] {
 }
 
 function windowsJoin(left: string, right: string): string {
+  if (left.startsWith("\\\\?\\")) {
+    const base = left.startsWith("\\\\?\\UNC\\")
+      ? `\\\\${left.slice(8)}`
+      : left.slice(4);
+    if (win32.isAbsolute(base)) {
+      // Join scopes before restoring the prefix that preserves raw filenames.
+      const joined = windowsJoin(base, right);
+      return win32.isAbsolute(joined) && !joined.startsWith("\\\\?\\")
+        ? win32.toNamespacedPath(joined)
+        : joined;
+    }
+  }
   const [leftDrive, leftRoot, leftPath] = windowsParts(left);
   const [rightDrive, rightRoot, rightPath] = windowsParts(right);
   if (rightRoot) return (rightDrive || leftDrive) + rightRoot + rightPath;

@@ -205,6 +205,15 @@ fn main() -> std::io::Result<()> {
             }
             fs::remove_file(&output)?;
         }
+        for scope in [PathBuf::from("."), PathBuf::from(&scopes[0]).join("..")] {
+            let child = invoke(&["--repo".into(), repo.clone(), "--scope".into(), scope])?;
+            let expected = b"## SECURITY.md source: \"SECURITY.md\"\n\nroot raw\n";
+            if !child.status.success() || !child.stderr.is_empty() || child.stdout != expected {
+                return Err(io::Error::other(
+                    "Windows policy helper did not resolve the root scope",
+                ));
+            }
+        }
         let listing = invoke(&["--repo".into(), "~".into(), "--list".into()])?;
         let expected =
             b"[\"SECURITY.md\", \"scope-\\udfff/SECURITY.md\", \"scope-\\ufffd/SECURITY.md\"]\n";
