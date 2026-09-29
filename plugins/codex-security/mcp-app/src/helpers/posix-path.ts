@@ -59,7 +59,10 @@ export function resolvePosixPath(value: Buffer, strict = true): Buffer {
       // Existing dangling links are rejected above; only absent components
       // may be appended to a canonical existing ancestor.
       const path = current.toString("latin1");
-      missing.push(posix.basename(path));
+      const name = posix.basename(path);
+      // Cancelling an unresolved component can expose an unresolved symlink.
+      if (name === "..") throw error;
+      missing.push(name);
       current = Buffer.from(posix.dirname(path), "latin1");
     }
   }

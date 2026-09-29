@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { PLUGIN_ROOT } from "./plugin-root.js";
 
@@ -530,6 +530,15 @@ describe("built candidate normalizer", () => {
       symlinkSync(missing, dangling);
       expect(run({ ...f, output: dangling }, [[candidate()]]).status).toBe(2);
       expect(existsSync(missing)).toBe(false);
+
+      symlinkSync(f.root, join(f.root, "directory-alias"), "dir");
+      for (const protectedPath of [source, f.scope]) {
+        const before = readFileSync(protectedPath);
+        const output = `${f.root}/missing/../directory-alias/${basename(protectedPath)}`;
+        expect(invoke({ ...f, output }, [source]).status).toBe(2);
+        expect(readFileSync(protectedPath)).toEqual(before);
+      }
+      expect(existsSync(join(f.root, "missing"))).toBe(false);
     }
     const nested = {
       ...f,
