@@ -14,13 +14,13 @@ import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import {
   decodePosixBytes,
   encodePosixPath,
-  resolvePosixPath,
   SymlinkLoopError,
 } from "./posix-path";
 import {
   expandHome,
   HomeExpansionError,
   parsedPath,
+  resolvedPath as resolveFilePath,
   windowsRelativePath,
 } from "./resolve-security-md";
 import { windowsBinding } from "../native";
@@ -83,18 +83,15 @@ function object(value: unknown): value is Row {
 }
 
 function stableJson(value: unknown): string {
-  if (typeof value === "string") {
-    if (/[\ud800-\udfff]/u.test(value))
+  return JSON.stringify(value, (_key, item: unknown) => {
+    if (typeof item === "string" && /[\ud800-\udfff]/u.test(item))
       throw new Error("UTF-8 cannot encode an unpaired surrogate");
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (object(value))
-    return `{${Object.keys(value)
-      .sort(compare)
-      .map((key) => `${stableJson(key)}:${stableJson(value[key])}`)
-      .join(",")}}`;
-  return JSON.stringify(value);
+    return object(item)
+      ? Object.fromEntries(
+          Object.entries(item).sort(([a], [b]) => compare(a, b)),
+        )
+      : item;
+  });
 }
 
 const windows = process.platform === "win32";
@@ -105,35 +102,24 @@ const readFile = (path: string) =>
   windows ? windowsFiles().readFile(fsPath(path)) : readFileSync(fsPath(path));
 const stat = (path: string) =>
   windows ? windowsFiles().stat(fsPath(path)) : statSync(fsPath(path));
-const pathKey = (value: string) =>
-  process.platform === "win32" ? value.toLowerCase() : value;
+const pathKey = (value: string) => (windows ? value.toLowerCase() : value);
 
 function resolvedPath(value: string, strict = true): string {
-  if (process.platform !== "win32")
-    return decodePosixBytes(
-      resolvePosixPath(encodePosixPath(parsedPath(value)), strict),
-    );
-  try {
-    return pathText(windowsFiles().realpath(widePath(value), strict));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ELOOP")
-      throw new SymlinkLoopError(`Symlink loop from ${value}`);
-    throw error;
-  }
+  const path = resolveFilePath(
+    fsPath(windows ? value : parsedPath(value)),
+    strict,
+  );
+  return windows ? pathText(path) : decodePosixBytes(path);
 }
 
 function inside(path: string, root: string, allowMissing = false): string {
-  let result: string | undefined;
-  if (windows) {
-    const bytes = windowsRelativePath(
-      widePath(path),
-      widePath(root),
-      allowMissing,
-    );
-    result = bytes === undefined ? undefined : pathText(bytes);
-  } else {
-    result = relative(root, path);
-  }
+  const result = windows
+    ? windowsRelativePath(
+        widePath(path),
+        widePath(root),
+        allowMissing,
+      )?.toString("utf16le")
+    : relative(root, path);
   if (
     result === undefined ||
     isAbsolute(result) ||
@@ -147,12 +133,11 @@ function inside(path: string, root: string, allowMissing = false): string {
 function relativeFile(value: unknown, root: string): [string, string] {
   if (typeof value !== "string" || value === "" || value.includes("\0"))
     throw new Error("path: expected a non-empty repository-relative path");
-  const raw =
-    process.platform === "win32" ? value.replaceAll("\\", "/") : value;
+  const raw = windows ? value.replaceAll("\\", "/") : value;
   if (
     raw.startsWith("/") ||
     raw.split("/").includes("..") ||
-    (process.platform === "win32" && /^[A-Za-z]:/u.test(raw))
+    (windows && /^[A-Za-z]:/u.test(raw))
   )
     throw new Error(
       "path: expected a repository-relative path without traversal",
@@ -181,7 +166,7 @@ function readScope(
     }
   };
   const carriage = new Map<string, [boolean, boolean]>();
-  if (process.platform !== "win32") {
+  if (!windows) {
     for (const line of lines) {
       if (line.endsWith("\r") && line !== "\r")
         carriage.set(line, [isFile(line), isFile(line.slice(0, -1))]);
@@ -196,7 +181,7 @@ function readScope(
   const scope = new Set<string>();
   for (const [index, original] of lines.entries()) {
     let line = original;
-    if (process.platform === "win32" || line === "\r") {
+    if (windows || line === "\r") {
       if (line.endsWith("\r")) line = line.slice(0, -1);
     } else if (line.endsWith("\r")) {
       const [literal, stripped] = carriage.get(line)!;
@@ -373,43 +358,33 @@ function normalizeCandidate(
   return result;
 }
 
-function combine(rows: Candidate[]): (Candidate & { candidate_id: string })[] {
-  const groups = new Map<string, Candidate[]>();
-  for (const row of rows) {
-    const key = stableJson({
-      cwe_ids: row.cwe_ids,
-      locations: row.locations,
-      instance: row.instance ?? null,
+function combine(groups: Map<string, Candidate[]>) {
+  return [...groups]
+    .sort(([a], [b]) => compare(a, b))
+    .map(([key, group]) => {
+      const merged = (field: "summary" | "evidence" | "context") =>
+        [
+          ...new Set(
+            group
+              .map((row) => row[field])
+              .filter((value): value is string => value !== undefined),
+          ),
+        ]
+          .sort(compare)
+          .join("\n");
+      const result = {
+        ...group[0]!,
+        candidate_id: `candidate-${createHash("sha256").update(key).digest("hex").slice(0, 16)}`,
+        summary: merged("summary"),
+        evidence: merged("evidence"),
+      };
+      const context = merged("context");
+      if (context !== "") result.context = context;
+      return result;
     });
-    const group = groups.get(key) ?? [];
-    group.push(row);
-    groups.set(key, group);
-  }
-  return [...groups.keys()].sort(compare).map((key) => {
-    const group = groups.get(key)!;
-    const merged = (field: "summary" | "evidence" | "context") =>
-      [
-        ...new Set(
-          group
-            .map((row) => row[field])
-            .filter((value): value is string => value !== undefined),
-        ),
-      ]
-        .sort(compare)
-        .join("\n");
-    const result = {
-      ...group[0]!,
-      candidate_id: `candidate-${createHash("sha256").update(key).digest("hex").slice(0, 16)}`,
-      summary: merged("summary"),
-      evidence: merged("evidence"),
-    };
-    const context = merged("context");
-    if (context !== "") result.context = context;
-    return result;
-  });
 }
 
-function argumentsFor(args: string[]): Record<string, string[] | boolean> {
+function argumentsFor(args: string[]): Map<string, string[]> {
   const names = [
     "input",
     "out",
@@ -439,7 +414,7 @@ function argumentsFor(args: string[]): Record<string, string[] | boolean> {
       return undefined;
     throw new Error(`unrecognized argument: ${value}`);
   }
-  const values: Record<string, string[] | boolean> = {};
+  const values = new Map<string, string[]>();
   for (let index = 0; index < args.length; index++) {
     const argument = args[index]!;
     const name = option(argument);
@@ -449,7 +424,7 @@ function argumentsFor(args: string[]): Record<string, string[] | boolean> {
     if (name === "help" || name === "allow-missing-in-scope") {
       if (equals !== -1)
         throw new Error(`argument --${name} does not take a value`);
-      values[name] = true;
+      values.set(name, []);
       if (name === "help") return values;
       continue;
     }
@@ -468,10 +443,10 @@ function argumentsFor(args: string[]): Record<string, string[] | boolean> {
       throw new Error(
         `argument --${name}: expected ${name === "input" ? "at least one argument" : "one argument"}`,
       );
-    values[name] = found;
+    values.set(name, found);
   }
   for (const name of ["input", "out", "repo-root", "in-scope-files"]) {
-    if (values[name] === undefined) throw new Error(`--${name} is required`);
+    if (!values.has(name)) throw new Error(`--${name} is required`);
   }
   return values;
 }
@@ -482,7 +457,7 @@ export function normalizeCandidatesCommand(
 ): number {
   try {
     const values = argumentsFor(args);
-    if (values.help) {
+    if (values.has("help")) {
       console.log(
         "Validate and combine security-scan candidates into deterministic JSONL.\n",
       );
@@ -492,9 +467,11 @@ export function normalizeCandidatesCommand(
       return 0;
     }
     const paths = (name: string, strict = true) =>
-      (values[name] as string[]).map((value) =>
-        resolvedPath(expandHome(parsedPath(value), posixHome), strict),
-      );
+      values
+        .get(name)!
+        .map((value) =>
+          resolvedPath(expandHome(parsedPath(value), posixHome), strict),
+        );
     const root = paths("repo-root")[0]!;
     if (!stat(root).isDirectory())
       throw new Error("--repo-root: expected a directory");
@@ -510,69 +487,78 @@ export function normalizeCandidatesCommand(
     const scope = readScope(
       scopePath,
       root,
-      values["allow-missing-in-scope"] === true,
+      values.has("allow-missing-in-scope"),
     );
     const lineCounts = new Map<string, number>();
-    const rows: Candidate[] = [];
+    const groups = new Map<string, Candidate[]>();
+    let rowCount = 0;
     for (const source of inputs) {
       const lines = decodeUtf8(readFile(source)).split(/\r\n|[\r\n]/u);
       for (const [index, line] of lines.entries()) {
         if (trim(line) === "") continue;
+        let candidate: Candidate;
         try {
           const row: unknown = JSON.parse(line);
           if (!object(row)) throw new Error("expected a JSON object");
-          rows.push(normalizeCandidate(row, root, scope, lineCounts));
+          candidate = normalizeCandidate(row, root, scope, lineCounts);
         } catch (error) {
           if (error instanceof SymlinkLoopError) throw error;
           throw new Error(
             `${source} row ${index + 1}: ${(error as Error).message}`,
           );
         }
+        const key = stableJson({
+          cwe_ids: candidate.cwe_ids,
+          locations: candidate.locations,
+          instance: candidate.instance ?? null,
+        });
+        const group = groups.get(key) ?? [];
+        group.push(candidate);
+        groups.set(key, group);
+        rowCount++;
       }
     }
-    const combined = combine(rows);
+    const combined = combine(groups);
     if (windows) windowsFiles().mkdir(fsPath(dirname(output)));
     else mkdirSync(fsPath(dirname(output)), { recursive: true });
-    const temporary = join(
-      dirname(output),
-      `.${basename(output)}.${randomBytes(6).toString("base64url")}.tmp`,
+    const temporary = fsPath(
+      join(
+        dirname(output),
+        `.${basename(output)}.${randomBytes(6).toString("base64url")}.tmp`,
+      ),
     );
     let created = false;
+    function* contents() {
+      created = true;
+      for (const row of combined)
+        yield Buffer.from(`${stableJson(row)}${windows ? "\r\n" : "\n"}`);
+    }
     try {
       if (windows) {
-        function* contents() {
-          created = true;
-          for (const row of combined)
-            yield Buffer.from(`${stableJson(row)}\r\n`);
-        }
-        windowsFiles().writeFile(fsPath(temporary), contents(), true);
-        windowsFiles().rename(fsPath(temporary), fsPath(output));
+        windowsFiles().writeFile(temporary, contents(), true);
+        windowsFiles().rename(temporary, fsPath(output));
       } else {
-        const descriptor = openSync(fsPath(temporary), "wx", 0o600);
-        created = true;
+        const descriptor = openSync(temporary, "wx", 0o600);
         try {
-          for (const row of combined)
-            writeFileSync(descriptor, `${stableJson(row)}\n`, "utf8");
+          for (const chunk of contents()) writeFileSync(descriptor, chunk);
         } finally {
           closeSync(descriptor);
         }
-        renameSync(fsPath(temporary), fsPath(output));
+        renameSync(temporary, fsPath(output));
       }
     } finally {
       try {
         if (created) {
-          if (windows) windowsFiles().unlink(fsPath(temporary));
-          else unlinkSync(fsPath(temporary));
+          if (windows) windowsFiles().unlink(temporary);
+          else unlinkSync(temporary);
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     }
-    const message = `Combined ${rows.length} candidate rows into ${combined.length} rows in ${output}\n`;
+    const message = `Combined ${rowCount} candidate rows into ${combined.length} rows in ${output}\n`;
     process.stdout.write(
-      process.platform === "win32"
-        ? message.replace(/\n/gu, "\r\n")
-        : encodePosixPath(message),
+      windows ? message.replace(/\n/gu, "\r\n") : encodePosixPath(message),
     );
     return 0;
   } catch (error) {

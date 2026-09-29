@@ -60,10 +60,10 @@ export function parsedPath(value: string): string {
   return root + parts.join(sep) || ".";
 }
 
-function resolvedPath(path: Buffer): Buffer {
-  if (process.platform !== "win32") return resolvePosixPath(path);
+export function resolvedPath(path: Buffer, strict = true): Buffer {
+  if (process.platform !== "win32") return resolvePosixPath(path, strict);
   try {
-    return windowsFiles().realpath(path);
+    return windowsFiles().realpath(path, strict);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ELOOP")
       throw new SymlinkLoopError(`Symlink loop from ${decodePath(path)}`);
