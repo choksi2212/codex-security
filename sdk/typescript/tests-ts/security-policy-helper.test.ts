@@ -175,7 +175,7 @@ describe("built SECURITY.md helper", () => {
         expect(result.stdout).toContain("home-variable policy");
       }
       expect(run(["--repo", root, "--scope", "~"], homeEnv({})).status).toBe(1);
-      const other = homeEnv({ USERPROFILE: `${home}\\`, USERNAME: "current" });
+      const other = homeEnv({ USERPROFILE: home, USERNAME: "different" });
       expect(run(["--repo", "~other", "--scope", "."], other).status).toBe(1);
     },
   );
@@ -736,13 +736,18 @@ describe("built SECURITY.md helper", () => {
       const profiles = join(root, "profiles");
       write(profiles, "current/SECURITY.md", "current policy\n");
       write(profiles, "sibling/SECURITY.md", "sibling policy\n");
-      const result = run(["--repo", "~sibling", "--scope", "~sibling"], {
-        ...process.env,
-        USERPROFILE: join(profiles, "current"),
-        USERNAME: "current",
-      });
-      expect(result.status, result.stderr).toBe(0);
-      expect(result.stdout).toContain("sibling policy\n");
+      for (const home of [
+        join(profiles, "current"),
+        `${join(profiles, "current")}\\`,
+      ]) {
+        const result = run(["--repo", "~sibling", "--scope", "~sibling"], {
+          ...process.env,
+          USERPROFILE: home,
+          USERNAME: "current",
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toContain("sibling policy\n");
+      }
     },
   );
 
@@ -795,6 +800,9 @@ describe("built SECURITY.md helper", () => {
       const drive = root.slice(0, 2);
       for (const scope of [
         `${drive}src\\app.ts`,
+        "src/app.ts",
+        "src/../src/app.ts",
+        win32.toNamespacedPath(join(root, "src", "app.ts")),
         join(root, "src", "app.ts").slice(2),
         `${join(root, "src")}.`,
         `${join(root, "src").slice(2)}.`,

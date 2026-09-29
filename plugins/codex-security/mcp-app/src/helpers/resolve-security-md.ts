@@ -36,70 +36,38 @@ type FileInfo = Pick<Stats, "isDirectory" | "isFile" | "isSymbolicLink"> & {
 const statPath = (path: Buffer): FileInfo =>
   windows ? windowsFiles().stat(path) : statSync(path);
 
-function windowsParts(value: string): [string, string, string] {
-  const path = value.replaceAll("/", "\\");
-  if (path.startsWith("\\\\")) {
-    const start = path.slice(0, 8).toUpperCase() === "\\\\?\\UNC\\" ? 8 : 2;
-    const server = path.indexOf("\\", start);
-    const share = server === -1 ? -1 : path.indexOf("\\", server + 1);
-    return share === -1
-      ? [value, "", ""]
-      : [value.slice(0, share), value[share]!, value.slice(share + 1)];
-  }
-  const drive = path[1] === ":" ? 2 : 0;
-  const root = path[drive] === "\\" ? 1 : 0;
-  return [
-    value.slice(0, drive),
-    value.slice(drive, drive + root),
-    value.slice(drive + root),
-  ];
-}
-
 function windowsJoin(left: string, right: string): string {
-  if (left.startsWith("\\\\?\\")) {
-    const base = left.startsWith("\\\\?\\UNC\\")
-      ? `\\\\${left.slice(8)}`
-      : left.slice(4);
-    if (win32.isAbsolute(base)) {
-      // Join scopes before restoring the prefix that preserves raw filenames.
-      const joined = windowsJoin(base, right);
-      return !win32.isAbsolute(right) &&
-        win32.isAbsolute(joined) &&
-        !joined.startsWith("\\\\?\\")
-        ? win32.toNamespacedPath(joined)
-        : joined;
-    }
-  }
-  const [leftDrive, leftRoot, leftPath] = windowsParts(left);
-  const [rightDrive, rightRoot, rightPath] = windowsParts(right);
-  if (rightRoot) return (rightDrive || leftDrive) + rightRoot + rightPath;
-  if (rightDrive && rightDrive.toLowerCase() !== leftDrive.toLowerCase())
+  if (right.startsWith("\\\\?\\") || right.startsWith("\\\\.\\")) return right;
+  const namespaced = left.startsWith("\\\\?\\");
+  const base = left.startsWith("\\\\?\\UNC\\")
+    ? `\\\\${left.slice(8)}`
+    : namespaced
+      ? left.slice(4)
+      : left;
+  const drive = win32.parse(right).root;
+  if (
+    drive.endsWith(":") &&
+    drive.toLowerCase() !== base.slice(0, 2).toLowerCase()
+  )
     return right;
-  const drive = rightDrive || leftDrive;
-  const path =
-    leftPath + (leftPath && !/[/\\]$/u.test(leftPath) ? "\\" : "") + rightPath;
-  const root =
-    leftRoot || (path && drive && !/[:/\\]$/u.test(drive) ? "\\" : "");
-  return drive + root + path;
+  const joined = win32.resolve(base, right);
+  return namespaced && !win32.isAbsolute(right)
+    ? win32.toNamespacedPath(joined)
+    : joined;
 }
 
 function parsedPath(value: string): string {
-  // pathlib removes empty and '.' components while preserving symlink/.. pairs.
-  let root = windows
-    ? windowsParts(value).slice(0, 2).join("").replaceAll("/", "\\")
+  // Preserve symlink/.. pairs while removing empty and '.' components.
+  const root = windows
+    ? win32.parse(value).root.replaceAll("/", "\\")
     : value.startsWith("//") && !value.startsWith("///")
       ? "//"
       : parse(value).root;
-  if (windows && root.startsWith("\\\\") && !root.endsWith("\\")) {
-    const parts = root.split("\\");
-    if ((parts.length === 4 && !"?.".includes(parts[2]!)) || parts.length === 6)
-      root += "\\";
-  }
   const parts = value
     .slice(root.length)
-    .split(process.platform === "win32" ? /[/\\]/u : /\//u)
+    .split(windows ? /[/\\]/u : /\//u)
     .filter((part) => part !== "" && part !== ".");
-  if (windows && !root && windowsParts(parts[0] ?? "")[0]) parts.unshift(".");
+  if (windows && !root && win32.parse(parts[0] ?? "").root) parts.unshift(".");
   return root + parts.join(sep) || ".";
 }
 
@@ -128,23 +96,19 @@ function expandHome(path: string, posixHome: string | undefined): string {
     let home = environment("USERPROFILE");
     const homePath = environment("HOMEPATH");
     if (home === undefined && homePath !== undefined) {
-      home = windowsJoin(environment("HOMEDRIVE") ?? "", homePath);
+      home = `${environment("HOMEDRIVE") ?? ""}${homePath}`;
     }
     if (home === undefined)
       throw new HomeExpansionError("Could not determine home directory.");
     if (username !== "" && username !== currentUsername) {
-      const [drive, root, tail] = windowsParts(home);
-      const separator = Math.max(tail.lastIndexOf("/"), tail.lastIndexOf("\\"));
-      if (currentUsername !== tail.slice(separator + 1)) {
+      if (currentUsername !== win32.basename(home)) {
         throw new HomeExpansionError("Could not determine home directory.");
       }
-      const parent =
-        drive + root + tail.slice(0, separator + 1).replace(/[/\\]+$/u, "");
-      home = windowsJoin(parent, username);
+      home = win32.join(win32.dirname(home), username);
     }
     if (home.startsWith("~"))
       throw new HomeExpansionError("Could not determine home directory.");
-    return windowsJoin(home, separator === -1 ? "" : path.slice(end + 1));
+    return win32.join(home, separator === -1 ? "" : path.slice(end + 1));
   }
   if (path === "~" || path.startsWith("~/")) {
     const home = posixHome ?? homedir();
