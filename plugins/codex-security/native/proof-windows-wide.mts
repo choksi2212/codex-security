@@ -297,7 +297,7 @@ function worker(root: string): Record<string, boolean> {
     );
     files.mkdir(ordinaryDirectory);
     const missing = files.realpath(
-      widePath(win32.join(cwd, `directory-${name}`, "new.json")),
+      widePath(`${pathText(directory)}\\new.json`),
       false,
     );
     files.writeFile(missing, Buffer.from("new literal child"));
