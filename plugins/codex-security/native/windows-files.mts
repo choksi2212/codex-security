@@ -5,39 +5,6 @@ import { windowsFlags as flags } from "./windows-flags.mjs";
 export const widePath = (path: string): Buffer => Buffer.from(path, "utf16le");
 export const pathText = (path: Buffer): string => path.toString("utf16le");
 
-export function windowsParts(value: string): [string, string, string] {
-  const path = value.replaceAll("/", "\\");
-  if (path.startsWith("\\\\")) {
-    const start = path.slice(0, 8).toUpperCase() === "\\\\?\\UNC\\" ? 8 : 2;
-    const server = path.indexOf("\\", start);
-    const share = server === -1 ? -1 : path.indexOf("\\", server + 1);
-    return share === -1
-      ? [value, "", ""]
-      : [value.slice(0, share), value[share]!, value.slice(share + 1)];
-  }
-  const drive = path[1] === ":" ? 2 : 0;
-  const root = path[drive] === "\\" ? 1 : 0;
-  return [
-    value.slice(0, drive),
-    value.slice(drive, drive + root),
-    value.slice(drive + root),
-  ];
-}
-
-export function windowsJoin(left: string, right: string): string {
-  const [leftDrive, leftRoot, leftPath] = windowsParts(left);
-  const [rightDrive, rightRoot, rightPath] = windowsParts(right);
-  if (rightRoot) return (rightDrive || leftDrive) + rightRoot + rightPath;
-  if (rightDrive && rightDrive.toLowerCase() !== leftDrive.toLowerCase())
-    return right;
-  const drive = rightDrive || leftDrive;
-  const path =
-    leftPath + (leftPath && !/[/\\]$/u.test(leftPath) ? "\\" : "") + rightPath;
-  const root =
-    leftRoot || (path && drive && !/[:/\\]$/u.test(drive) ? "\\" : "");
-  return drive + root + path;
-}
-
 export function windowsFileSystem(native: WindowsBinding) {
   function check(error: number, path: Buffer): void {
     if (error === 0) return;
@@ -95,110 +62,39 @@ export function windowsFileSystem(native: WindowsBinding) {
     }
   }
 
-  function finalPath(text: string): string {
-    const path = widePath(text);
-    return withFile(path, 0, (handle) => {
-      const result = handle.finalPath(0);
-      check(result.error, path);
-      return pathText(result.path);
-    });
-  }
-
-  function readlink(path: Buffer): Buffer {
-    const result = native.windowsReadLink(operationPath(path));
-    check(result.error, path);
-    return result.value;
-  }
-
   function realpath(path: Buffer, strict = true): Buffer {
-    function normalize(value: string): string {
-      const verbatim = value.startsWith("\\\\?\\");
-      const text = verbatim
-        ? value.replaceAll("/", "\\")
-        : pathText(absolute(widePath(value)));
-      // Verbatim paths bypass Win32 dot parsing; normalize only below their root.
-      const root =
-        (verbatim
-          ? /^\\\\\?\\(?:UNC\\[^\\]+\\[^\\]+(?:\\|$)|[^\\]+\\)/iu.exec(
-              text,
-            )?.[0]
-          : undefined) ?? win32.parse(text).root;
-      const tail = text.slice(root.length);
-      return (
-        root +
-        (verbatim ? win32.join("\\", tail).slice(1) : tail).replace(/\\+$/u, "")
-      );
-    }
-    let text = pathText(path);
-    if (win32.normalize(text).toLowerCase() === "nul")
-      return widePath("\\\\.\\NUL");
-    if (!win32.isAbsolute(text))
-      text = windowsJoin(pathText(absolute(widePath("."))), text);
-    const normalized = normalize(text);
-    text = pathText(absolute(widePath(normalized)));
-    const seen = new Set<string>();
-    let initialError: number | undefined;
-    const tail: string[] = [];
+    let current = absolute(path);
+    const missing: string[] = [];
     while (true) {
       try {
-        text = finalPath(text);
-        break;
-      } catch (error) {
-        if (strict) throw error;
-        const winerror = (error as { winerror?: number }).winerror;
-        // Match pathlib's non-strict Windows resolution errors.
-        if (
-          ![
-            1, 2, 3, 5, 21, 32, 50, 53, 65, 67, 87, 123, 161, 1920, 1921,
-          ].includes(winerror ?? 0)
-        )
-          throw error;
-        initialError ??= winerror;
-        const value = widePath(text);
-        // Unicode lowercasing can merge distinct Windows filenames.
-        if (winerror === 1921 || seen.has(text)) check(1921, value);
-        seen.add(text);
-        const parent = win32.dirname(text);
-        if (parent === text) break;
-        let target: Buffer | undefined;
-        try {
-          target = readlink(value);
-        } catch {
-          // Missing and ordinary entries have no link target to follow.
-        }
-        if (target !== undefined) {
-          // Native link targets retain literal trailing dots and spaces.
-          text = normalize(
-            win32.toNamespacedPath(windowsJoin(parent, pathText(target))),
+        return withFile(current, 0, (handle) => {
+          const result = handle.finalPath(0);
+          check(result.error, current);
+          if (!missing.length) return result.path;
+          // Join filename components directly so a:stream remains a filename.
+          return widePath(
+            `${pathText(result.path).replace(/\\$/u, "")}\\${missing.reverse().join("\\")}`,
           );
+        });
+      } catch (error) {
+        if (strict || (error as NodeJS.ErrnoException).code !== "ENOENT")
+          throw error;
+        try {
+          withFile(current, 0, () => {}, flags.OPEN_EXISTING, false);
+        } catch (sourceError) {
+          if ((sourceError as NodeJS.ErrnoException).code !== "ENOENT")
+            throw sourceError;
+          const text = pathText(current);
+          const parent = win32.dirname(text);
+          if (parent === text) throw error;
+          missing.push(win32.basename(text));
+          current = widePath(parent);
           continue;
         }
-        tail.push(win32.basename(text));
-        text = parent;
+        // An existing entry that cannot be followed is not a missing output.
+        throw error;
       }
     }
-    // These are filename components; a:stream must not become drive A.
-    if (tail.length)
-      text = `${text.replace(/\\$/u, "")}\\${tail.reverse().join("\\")}`;
-    if (normalized.startsWith("\\\\?\\")) return widePath(text);
-    const shortened = text.startsWith("\\\\?\\UNC\\")
-      ? `\\\\${text.slice(8)}`
-      : text.startsWith("\\\\?\\")
-        ? text.slice(4)
-        : text;
-    // Like pathlib, remove the device prefix only if that spelling resolves too.
-    try {
-      if (finalPath(shortened) === text) text = shortened;
-    } catch (error) {
-      // Extended paths can be valid when their ordinary spelling is not.
-      if (
-        !strict &&
-        (error as { winerror?: number }).winerror === initialError &&
-        pathText(operationPath(widePath(shortened))) === text
-      )
-        text = shortened;
-    }
-    return widePath(text);
   }
 
   function stat(path: Buffer, follow = true) {
@@ -339,7 +235,6 @@ export function windowsFileSystem(native: WindowsBinding) {
     identity,
     entriesWithTypes,
     mkdir,
-    readlink,
     readInto,
     readFile,
     writeFile,

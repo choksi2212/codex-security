@@ -36,7 +36,6 @@ export interface WindowsBinding {
   ): WindowsResult<
     { name: Buffer; isDirectory: boolean; isSymbolicLink: boolean }[]
   >;
-  windowsReadLink(path: Buffer): WindowsResult<Buffer>;
   openWindowsFile(
     path: Buffer,
     access: number,
