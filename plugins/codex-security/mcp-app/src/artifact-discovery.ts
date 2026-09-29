@@ -141,7 +141,11 @@ export async function recordCodexSecurityDiscoveryCandidates(
   ];
 
   // Verify the inventory is a context-bound regular file before normalization.
-  await readArtifactText(context, inventoryComponents, "discovery review inventory");
+  await readArtifactText(
+    context,
+    inventoryComponents,
+    "discovery review inventory",
+  );
   const inventoryPath = await artifactDestination(
     context,
     inventoryComponents,
@@ -236,16 +240,18 @@ export async function listCodexSecurityCandidates(
 
 function discoveryNormalizationError(
   error: unknown,
-  privateValues: Array<readonly [string, string]>
+  privateValues: Array<readonly [string, string]>,
 ): Error {
-  const stderr = error && typeof error === "object" && "stderr" in error
-    ? error.stderr
-    : undefined;
-  let detail = typeof stderr === "string"
-    ? stderr.trim()
-    : Buffer.isBuffer(stderr)
-      ? stderr.toString("utf8").trim()
-      : "";
+  const stderr =
+    error && typeof error === "object" && "stderr" in error
+      ? error.stderr
+      : undefined;
+  let detail =
+    typeof stderr === "string"
+      ? stderr.trim()
+      : Buffer.isBuffer(stderr)
+        ? stderr.toString("utf8").trim()
+        : "";
 
   if (!detail) {
     return new Error(

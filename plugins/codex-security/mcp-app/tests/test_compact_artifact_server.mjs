@@ -1341,7 +1341,7 @@ async function testDiscoveryWorkerToolList(bundle) {
     CODEX_SECURITY_REPO_ROOT: repoRoot,
     CODEX_SECURITY_ARTIFACT_LAYOUT: "worker",
     CODEX_SECURITY_SCAN_ID: scanId,
-    CODEX_SECURITY_PLUGIN_ROOT: bundledPluginRoot
+    CODEX_SECURITY_PLUGIN_ROOT: bundledPluginRoot,
   });
   try {
     assert.deepEqual(
@@ -1723,7 +1723,7 @@ async function bundleEntrypoint(entrypoint, outfile) {
     bundle: true,
     define: {
       __dirname: JSON.stringify(path.join(bundledPluginRoot, "mcp")),
-      "import.meta.url": "__filename"
+      "import.meta.url": "__filename",
     },
     entryPoints: [path.join(applicationRoot, entrypoint)],
     external: ["fsevents"],

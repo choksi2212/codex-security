@@ -220,14 +220,6 @@ function readScope(
     } catch (error) {
       if (error instanceof SymlinkLoopError) throw error;
       if (allowMissing && (error as NodeJS.ErrnoException).code === "ENOENT") {
-        if (
-          line.startsWith("/") ||
-          line.split("/").includes("..") ||
-          line.includes("\0")
-        )
-          throw new Error(
-            `in-scope file row ${index + 1}: unsafe deleted path`,
-          );
         try {
           scope.add(
             inside(resolvedPath(`${root}${sep}${line}`, false), root, true),
@@ -313,11 +305,7 @@ function normalizeLocations(
     if (unknown.length)
       throw new Error(`locations: unsupported fields ${unknown.join(", ")}`);
     const [name, source] = relativeFile(item.path, root);
-    if (
-      trim(name) === "" ||
-      name.includes("\\") ||
-      name.split("/").some((part) => part.includes(":"))
-    )
+    if (trim(name) === "" || name.includes("\\") || name.includes(":"))
       throw new Error("path: expected a safe repository-relative POSIX path");
     const start = positiveLine(item.start_line, "start_line");
     const end = positiveLine(
@@ -378,10 +366,10 @@ function normalizeCandidate(
     summary: textField(row, "summary")!,
     evidence: textField(row, "evidence")!,
   };
-  const context = textField(row, "context", false);
-  if (context !== undefined) result.context = context;
-  const instance = textField(row, "instance", false);
-  if (instance !== undefined) result.instance = instance;
+  for (const field of ["context", "instance"] as const) {
+    const value = textField(row, field, false);
+    if (value !== undefined) result[field] = value;
+  }
   return result;
 }
 

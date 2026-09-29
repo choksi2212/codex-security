@@ -95,7 +95,9 @@ assert.deepEqual(toolSchemas.$defs.workbenchListCandidatesInput.required, [
   "scanId",
 ]);
 
-const root = await realpath(await mkdtemp(path.join(tmpdir(), "security-artifact-discovery-")));
+const root = await realpath(
+  await mkdtemp(path.join(tmpdir(), "security-artifact-discovery-")),
+);
 const runtimePluginRoot = path.join(root, "plugin");
 try {
   await build({
@@ -103,7 +105,7 @@ try {
     entryPoints: [path.join(pluginRoot, "mcp-app", "helpers-main.ts")],
     outfile: path.join(runtimePluginRoot, "mcp", "helpers.mjs"),
     format: "esm",
-    platform: "node"
+    platform: "node",
   });
   if (process.platform === "win32") {
     const target = `win32-${process.arch}`;
@@ -111,7 +113,7 @@ try {
     await mkdir(destination, { recursive: true });
     await copyFile(
       path.join(pluginRoot, "native", "prebuilt", target, "windows.node"),
-      path.join(destination, "windows.node")
+      path.join(destination, "windows.node"),
     );
   }
   const repoRoot = path.join(root, "repository");
@@ -578,7 +580,7 @@ async function createContext(root, repoRoot, name, layout) {
     repoRoot,
     layout,
     pluginRoot: runtimePluginRoot,
-    pythonCommand: path.join(root, "python-must-not-run")
+    pythonCommand: path.join(root, "python-must-not-run"),
   };
 }
 
