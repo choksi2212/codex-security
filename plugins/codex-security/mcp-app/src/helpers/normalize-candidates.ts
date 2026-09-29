@@ -138,9 +138,7 @@ function readScope(
     } catch (error) {
       if (allowMissing && (error as NodeJS.ErrnoException).code === "ENOENT") {
         try {
-          scope.add(
-            inside(resolvedPath(join(root, line), false), root, true),
-          );
+          scope.add(inside(resolvedPath(join(root, line), false), root, true));
         } catch (error) {
           throw new Error(
             `in-scope file row ${index + 1}: path escapes repository`,
