@@ -1,4 +1,4 @@
-import { compareUnicode as compare, decodeUtf8 } from "./utf8";
+import { decodeUtf8 } from "./utf8";
 import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
@@ -43,6 +43,8 @@ const fields = new Set([
   "context",
   "instance",
 ]);
+const locationFields = new Set(["path", "start_line", "end_line", "role"]);
+const jsonFields = [...fields, ...locationFields].sort();
 type Row = Record<string, unknown>;
 interface Location {
   path: string;
@@ -63,14 +65,12 @@ function object(value: unknown): value is Row {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function compare(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function stableJson(value: unknown): string {
-  return JSON.stringify(value, (_key, item: unknown) =>
-    object(item)
-      ? Object.fromEntries(
-          Object.entries(item).sort(([a], [b]) => compare(a, b)),
-        )
-      : item,
-  );
+  return JSON.stringify(value, jsonFields);
 }
 
 const windows = process.platform === "win32";
@@ -203,10 +203,8 @@ function normalizeLocations(
   for (const item of row.locations) {
     if (!object(item)) throw new Error("locations: expected location objects");
     const unknown = Object.keys(item)
-      .filter(
-        (key) => !["path", "start_line", "end_line", "role"].includes(key),
-      )
-      .sort(compare);
+      .filter((key) => !locationFields.has(key))
+      .sort();
     if (unknown.length)
       throw new Error(`locations: unsupported fields ${unknown.join(", ")}`);
     const [name, source] = relativeFile(item.path, root);
@@ -258,7 +256,7 @@ function normalizeCandidate(
 ): Candidate {
   const unknown = Object.keys(row)
     .filter((key) => !fields.has(key))
-    .sort(compare);
+    .sort();
   if (unknown.length)
     throw new Error(`unsupported fields ${unknown.join(", ")}`);
   if ("candidate_id" in row) textField(row, "candidate_id");
@@ -290,7 +288,7 @@ function combine(groups: Map<string, Candidate[]>) {
               .filter((value): value is string => value !== undefined),
           ),
         ]
-          .sort(compare)
+          .sort()
           .join("\n");
       const result = {
         ...group[0]!,

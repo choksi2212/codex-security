@@ -1,4 +1,4 @@
-import { compareUnicode, decodeUtf8 } from "./utf8";
+import { decodeUtf8 } from "./utf8";
 import {
   closeSync,
   lstatSync,
@@ -258,17 +258,12 @@ function listSecurityMd(repo: string, posixHome: string | undefined): string[] {
   const root = resolveRoot(repo, posixHome);
   const policies: string[] = [];
   function walk(directory: Buffer, prefix: string): void {
-    const entries = (
-      windows
-        ? windowsFiles().entriesWithTypes(directory)
-        : readdirSync(directory, { encoding: "buffer", withFileTypes: true })
-    ).map((entry) => ({
-      bytes: entry.name,
-      name: decodePath(entry.name),
-      entry,
-    }));
-    entries.sort((left, right) => compareUnicode(left.name, right.name));
-    for (const { bytes, name, entry: listedEntry } of entries) {
+    const entries = windows
+      ? windowsFiles().entriesWithTypes(directory)
+      : readdirSync(directory, { encoding: "buffer", withFileTypes: true });
+    for (const listedEntry of entries) {
+      const bytes = listedEntry.name;
+      const name = decodePath(bytes);
       if (name === ".git") continue;
       const path = appendPath(directory, bytes);
       const source = prefix === "" ? name : `${prefix}/${name}`;
@@ -304,7 +299,7 @@ function listSecurityMd(repo: string, posixHome: string | undefined): string[] {
     }
   }
   walk(root, "");
-  return policies.sort(compareUnicode);
+  return policies.sort();
 }
 
 function readPolicy(path: Buffer, displayedPath: Buffer): string {
@@ -398,67 +393,15 @@ export function resolveSecurityMdCommand(
   posixHome = process.env.HOME,
 ): number {
   try {
-    const options = {
-      repo: { type: "string" },
-      list: { type: "boolean" },
-      scope: { type: "string" },
-      out: { type: "string", default: "-" },
-      help: { type: "boolean", short: "h" },
-    } as const;
-    const names = Object.keys(options) as (keyof typeof options)[];
-    let parsedArgs: string[] = [];
-    for (let index = 0; index < args.length; index++) {
-      let arg = args[index]!;
-      if (arg === "--") throw new Error("Unexpected argument '--'");
-      if (arg.startsWith("-h")) {
-        if (/^-h+-/u.test(arg)) throw new Error(`Unexpected argument '${arg}'`);
-        if (/^-h+=/u.test(arg)) parseArgs({ args: [arg], options });
-        arg = "--help";
-      }
-      if (arg.startsWith("--") && arg !== "--") {
-        const equals = arg.indexOf("=");
-        const name = arg.slice(2, equals === -1 ? undefined : equals);
-        const matches = names.filter((option) => option.startsWith(name));
-        const option = matches.length === 1 ? matches[0] : undefined;
-        if (option !== undefined) {
-          // argparse accepts unique long-option prefixes.
-          arg = `--${option}${equals === -1 ? "" : arg.slice(equals)}`;
-          const next = args[index + 1];
-          if (
-            equals === -1 &&
-            options[option].type === "string" &&
-            next !== undefined
-          ) {
-            const prefix = next.split("=", 1)[0]!;
-            const optional =
-              next.startsWith("-h") ||
-              names.some((name) => `--${name}`.startsWith(prefix));
-            // Declared options take precedence over negative numbers and spaces.
-            if (
-              !next.startsWith("-") ||
-              next === "-" ||
-              (!optional &&
-                (next.includes(" ") ||
-                  /^-(?:\p{Decimal_Number}+|\p{Decimal_Number}*\.\p{Decimal_Number}+)\n?$/u.test(
-                    next,
-                  )))
-            ) {
-              arg += `=${next}`;
-              index++;
-            }
-          }
-        }
-        if (matches.length) parseArgs({ args: [arg], options });
-      }
-      parsedArgs.push(arg);
-      if (arg === "--help") {
-        parsedArgs = [arg];
-        break;
-      }
-    }
     const { values } = parseArgs({
-      args: parsedArgs,
-      options,
+      args,
+      options: {
+        repo: { type: "string" },
+        list: { type: "boolean" },
+        scope: { type: "string" },
+        out: { type: "string", default: "-" },
+        help: { type: "boolean", short: "h" },
+      },
     });
     if (values.help) {
       console.log(

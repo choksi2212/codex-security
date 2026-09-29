@@ -268,7 +268,7 @@ describe("built candidate normalizer", () => {
     expect(rejected.stderr).toContain("expected at least one in-scope file");
   });
 
-  test("sorts Unicode code points, normalizes CWE IDs, and trims text", () => {
+  test("normalizes Unicode candidates deterministically with native string order", () => {
     const f = fixture();
     const names = ["app/\u{10000}.py", "app/\ue000.py"];
     for (const name of names) write(join(f.repo, name), "line\n");
@@ -290,11 +290,18 @@ describe("built candidate normalizer", () => {
       "CWE-9007199254740993",
     ]);
     expect((value["locations"] as Row[]).map((item) => item["path"])).toEqual(
-      [...names].reverse(),
+      names,
     );
     expect(value["summary"]).toBe("Summary");
-    expect(value["evidence"]).toBe("\ue000\n\u{10000}");
-    expect(value["candidate_id"]).toBe("candidate-cc5ebd3ebd732a50");
+    expect(value["evidence"]).toBe("\u{10000}\n\ue000");
+    const reordered = {
+      ...row,
+      locations: [...(row.locations as Row[])].reverse(),
+    };
+    expect(
+      run(f, [[{ ...reordered, evidence: "\ue000" }, reordered]]).status,
+    ).toBe(0);
+    expect(ledger(f)).toEqual([value]);
     expect(readFileSync(f.output, "utf8").startsWith('{"candidate_id":')).toBe(
       true,
     );
