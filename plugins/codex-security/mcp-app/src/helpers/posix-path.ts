@@ -1,4 +1,6 @@
 import { isUtf8 } from "node:buffer";
+import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { posix } from "node:path";
 
 export function decodePosixBytes(bytes: Buffer): string {
   // Node 20's fatal TextDecoder can replace invalid bytes in longer inputs.
@@ -109,5 +111,3 @@ export function resolvePosixPath(value: Buffer, strict = true): Buffer {
   }
   return result;
 }
-import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
-import { posix } from "node:path";
