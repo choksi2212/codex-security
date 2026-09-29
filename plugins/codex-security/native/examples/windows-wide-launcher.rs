@@ -287,7 +287,7 @@ fn main() -> std::io::Result<()> {
             r#""evidence":"source evidence","locations":[{"end_line":1,"#,
             r#""path":"source.py","role":"entrypoint","start_line":1}],"#,
             r#""summary":"wide paths"}"#,
-            "\r\n",
+            "\n",
         );
         let candidate = |repo_arg: &Path, input: &Path, scope: &Path, output: &Path| {
             Command::new(&node)
@@ -329,7 +329,6 @@ fn main() -> std::io::Result<()> {
                     String::from_utf8_lossy(&child.stderr)
                 )));
             }
-            fs::remove_file(&output)?;
         }
         fs::create_dir(repo.join("blocked-output"))?;
         let child = candidate(

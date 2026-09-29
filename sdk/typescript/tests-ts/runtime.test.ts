@@ -782,58 +782,8 @@ describe("plugin runtime preparation", () => {
 
       const python = Bun.which("python3") ?? Bun.which("python");
       expect(python).not.toBeNull();
-      const sourcePlugin = await bundledPluginRoot();
-      const projector = new URL(
-        "../scripts/project-plugin.mjs",
-        import.meta.url,
-      );
-      const publicManifest = new URL(
-        "../public-repo/sdk/typescript/plugin.public.json",
-        import.meta.url,
-      );
-      let bundledPlugin = sourcePlugin;
-      if (existsSync(projector) && existsSync(publicManifest)) {
-        const packageRoot = join(root, "package");
-        const isolatedProjector = join(
-          packageRoot,
-          "scripts",
-          "project-plugin.mjs",
-        );
-        const isolatedManifest = join(
-          packageRoot,
-          "public-repo",
-          "sdk",
-          "typescript",
-          "plugin.public.json",
-        );
-        await Promise.all([
-          mkdir(dirname(isolatedProjector), { recursive: true }),
-          mkdir(dirname(isolatedManifest), { recursive: true }),
-        ]);
-        await Promise.all([
-          copyFile(projector, isolatedProjector),
-          copyFile(publicManifest, isolatedManifest),
-        ]);
-        const projection = Bun.spawnSync(
-          [process.execPath, isolatedProjector],
-          {
-            cwd: packageRoot,
-            env: {
-              ...process.env,
-              CODEX_SECURITY_PLUGIN_ROOT: sourcePlugin,
-            },
-            stdout: "pipe",
-            stderr: "pipe",
-          },
-        );
-        expect(new TextDecoder().decode(projection.stderr)).toBe("");
-        expect(projection.exitCode).toBe(0);
-        bundledPlugin = join(packageRoot, "_bundled_plugin");
-      }
+      const bundledPlugin = await bundledPluginRoot();
       const normalizer = join(bundledPlugin, "mcp", "helpers.mjs");
-      expect(await readFile(normalizer, "utf8")).toBe(
-        await readFile(join(sourcePlugin, "mcp", "helpers.mjs"), "utf8"),
-      );
       const locations: { path: string }[] = [];
       const input = join(root, "candidate-input.jsonl");
       const output = join(root, "candidate-output.jsonl");

@@ -11,15 +11,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
-import {
-  decodePosixBytes,
-  encodePosixPath,
-  SymlinkLoopError,
-} from "./posix-path";
+import { parseArgs } from "node:util";
+import { decodePosixBytes, encodePosixPath } from "./posix-path";
 import {
   expandHome,
-  HomeExpansionError,
-  parsedPath,
   resolvedPath as resolveFilePath,
   windowsRelativePath,
 } from "./resolve-security-md";
@@ -30,11 +25,6 @@ import {
   windowsFileSystem,
 } from "../../../native/windows-files.mjs";
 
-const trim = (value: string) =>
-  value.replace(
-    /^[\p{White_Space}\u001c-\u001f]+|[\p{White_Space}\u001c-\u001f]+$/gu,
-    "",
-  );
 const roles = [
   "entrypoint",
   "entrypoint/wrapper",
@@ -74,15 +64,13 @@ function object(value: unknown): value is Row {
 }
 
 function stableJson(value: unknown): string {
-  return JSON.stringify(value, (_key, item: unknown) => {
-    if (typeof item === "string" && /[\ud800-\udfff]/u.test(item))
-      throw new Error("UTF-8 cannot encode an unpaired surrogate");
-    return object(item)
+  return JSON.stringify(value, (_key, item: unknown) =>
+    object(item)
       ? Object.fromEntries(
           Object.entries(item).sort(([a], [b]) => compare(a, b)),
         )
-      : item;
-  });
+      : item,
+  );
 }
 
 const windows = process.platform === "win32";
@@ -96,10 +84,7 @@ const stat = (path: string) =>
 const pathKey = (value: string) => (windows ? value.toLowerCase() : value);
 
 function resolvedPath(value: string, strict = true): string {
-  const path = resolveFilePath(
-    fsPath(windows ? value : parsedPath(value)),
-    strict,
-  );
+  const path = resolveFilePath(fsPath(value), strict);
   return windows ? pathText(path) : decodePosixBytes(path);
 }
 
@@ -144,63 +129,19 @@ function readScope(
   root: string,
   allowMissing: boolean,
 ): Set<string> {
-  const contents = decodeUtf8(readFile(path));
-  const lines = contents.split("\n");
-  const listed = new Set(lines);
-  const isFile = (value: string) => {
-    try {
-      relativeFile(value, root);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  const carriage = new Map<string, [boolean, boolean]>();
-  if (!windows) {
-    for (const line of lines) {
-      if (line.endsWith("\r") && line !== "\r")
-        carriage.set(line, [isFile(line), isFile(line.slice(0, -1))]);
-    }
-  }
-  const crlf =
-    lines.includes("\r") ||
-    [...carriage.values()].some(([literal, stripped]) => stripped && !literal);
-  const literalEvidence = [...carriage.values()].some(
-    ([literal, stripped]) => literal && !stripped,
-  );
+  const lines = decodeUtf8(readFile(path)).split(/\r?\n/u);
   const scope = new Set<string>();
-  for (const [index, original] of lines.entries()) {
-    let line = original;
-    if (windows || line === "\r") {
-      if (line.endsWith("\r")) line = line.slice(0, -1);
-    } else if (line.endsWith("\r")) {
-      const [literal, stripped] = carriage.get(line)!;
-      if (stripped && !literal) line = line.slice(0, -1);
-      else if (stripped && literal) {
-        if (
-          (index === lines.length - 1 && !contents.endsWith("\n")) ||
-          listed.has(line.slice(0, -1))
-        ) {
-          // An unterminated row or a separately listed sibling preserves CR.
-        } else if (crlf && !literalEvidence) line = line.slice(0, -1);
-        else if (!(literalEvidence && !crlf))
-          throw new Error(
-            `in-scope file row ${index + 1}: ambiguous carriage-return paths`,
-          );
-      } else if (!literal && crlf) line = line.slice(0, -1);
-    }
+  for (const [index, line] of lines.entries()) {
     if (line === "") continue;
     try {
       scope.add(relativeFile(line, root)[0]);
     } catch (error) {
-      if (error instanceof SymlinkLoopError) throw error;
       if (allowMissing && (error as NodeJS.ErrnoException).code === "ENOENT") {
         try {
           scope.add(
             inside(resolvedPath(`${root}${sep}${line}`, false), root, true),
           );
         } catch (error) {
-          if (error instanceof SymlinkLoopError) throw error;
           throw new Error(
             `in-scope file row ${index + 1}: path escapes repository`,
           );
@@ -222,9 +163,9 @@ function textField(
 ): string | undefined {
   const value = row[field];
   if ((value === undefined || value === null) && !required) return undefined;
-  if (typeof value !== "string" || trim(value) === "")
+  if (typeof value !== "string" || value.trim() === "")
     throw new Error(`${field}: expected a non-empty string`);
-  return trim(value);
+  return value.trim();
 }
 
 function cweIds(row: Row): string[] {
@@ -234,19 +175,10 @@ function cweIds(row: Row): string[] {
   for (const value of values) {
     if (typeof value !== "string")
       throw new Error("cwe_ids: expected CWE strings");
-    const match = /^CWE-(\p{Decimal_Number}+)$/iu.exec(trim(value));
+    const match = /^CWE-(\d+)$/iu.exec(value.trim());
     if (match === null)
       throw new Error(`cwe_ids: unsupported value ${JSON.stringify(value)}`);
-    const digits = Array.from(match[1]!, (digit) => {
-      let point = digit.codePointAt(0)!;
-      let offset = 0;
-      while (/\p{Decimal_Number}/u.test(String.fromCodePoint(point - 1))) {
-        point--;
-        offset++;
-      }
-      return String(offset % 10);
-    }).join("");
-    const number = BigInt(digits);
+    const number = BigInt(match[1]!);
     if (number < 1n)
       throw new Error(`cwe_ids: unsupported value ${JSON.stringify(value)}`);
     found.add(number);
@@ -280,7 +212,7 @@ function normalizeLocations(
     if (unknown.length)
       throw new Error(`locations: unsupported fields ${unknown.join(", ")}`);
     const [name, source] = relativeFile(item.path, root);
-    if (trim(name) === "" || name.includes("\\") || name.includes(":"))
+    if (name.trim() === "" || name.includes("\\") || name.includes(":"))
       throw new Error("path: expected a safe repository-relative POSIX path");
     const start = positiveLine(item.start_line, "start_line");
     const end = positiveLine(
@@ -374,69 +306,32 @@ function combine(groups: Map<string, Candidate[]>) {
     });
 }
 
-function argumentsFor(args: string[]): Map<string, string[]> {
-  const names = [
-    "input",
-    "out",
-    "repo-root",
-    "in-scope-files",
-    "allow-missing-in-scope",
-    "help",
-  ];
-  function option(value: string): string | undefined {
-    if (value === "-h") return "help";
-    if (value.startsWith("--") && value !== "--") {
-      const name = value.slice(2).split("=", 1)[0]!;
-      const matches = names.filter((item) => item.startsWith(name));
-      if (matches.includes(name)) return name;
-      if (matches.length === 1) return matches[0];
-      if (matches.length > 1) throw new Error(`ambiguous option: ${value}`);
+function argumentsFor(args: string[]) {
+  const { values, tokens } = parseArgs({
+    args,
+    allowPositionals: true,
+    tokens: true,
+    options: {
+      input: { type: "string", multiple: true },
+      out: { type: "string" },
+      "repo-root": { type: "string" },
+      "in-scope-files": { type: "string" },
+      "allow-missing-in-scope": { type: "boolean" },
+      help: { type: "boolean", short: "h" },
+    },
+  });
+  let collectingInputs = false;
+  for (const token of tokens) {
+    if (token.kind === "option") collectingInputs = token.name === "input";
+    else if (token.kind === "positional") {
+      if (!collectingInputs)
+        throw new Error(`unrecognized argument: ${token.value}`);
+      values.input!.push(token.value);
     }
-    if (
-      !value.startsWith("-") ||
-      value === "-" ||
-      (!value.startsWith("-h") &&
-        (value.includes(" ") ||
-          /^-(?:\p{Decimal_Number}+|\p{Decimal_Number}*\.\p{Decimal_Number}+)\n?$/u.test(
-            value,
-          )))
-    )
-      return undefined;
-    throw new Error(`unrecognized argument: ${value}`);
   }
-  const values = new Map<string, string[]>();
-  for (let index = 0; index < args.length; index++) {
-    const argument = args[index]!;
-    const name = option(argument);
-    if (name === undefined)
-      throw new Error(`unrecognized argument: ${argument}`);
-    const equals = argument.indexOf("=");
-    if (name === "help" || name === "allow-missing-in-scope") {
-      if (equals !== -1)
-        throw new Error(`argument --${name} does not take a value`);
-      values.set(name, []);
-      if (name === "help") return values;
-      continue;
-    }
-    const found: string[] = [];
-    if (equals !== -1) found.push(argument.slice(equals + 1));
-    else {
-      while (
-        index + 1 < args.length &&
-        option(args[index + 1]!) === undefined
-      ) {
-        found.push(args[++index]!);
-        if (name !== "input") break;
-      }
-    }
-    if (found.length === 0)
-      throw new Error(
-        `argument --${name}: expected ${name === "input" ? "at least one argument" : "one argument"}`,
-      );
-    values.set(name, found);
-  }
-  for (const name of ["input", "out", "repo-root", "in-scope-files"]) {
-    if (!values.has(name)) throw new Error(`--${name} is required`);
+  if (!values.help) {
+    for (const name of ["input", "out", "repo-root", "in-scope-files"] as const)
+      if (values[name] === undefined) throw new Error(`--${name} is required`);
   }
   return values;
 }
@@ -447,7 +342,7 @@ export function normalizeCandidatesCommand(
 ): number {
   try {
     const values = argumentsFor(args);
-    if (values.has("help")) {
+    if (values.help) {
       console.log(
         "Validate and combine security-scan candidates into deterministic JSONL.\n",
       );
@@ -456,19 +351,20 @@ export function normalizeCandidatesCommand(
       );
       return 0;
     }
-    const paths = (name: string, strict = true) =>
-      values
-        .get(name)!
-        .map((value) =>
-          resolvedPath(expandHome(parsedPath(value), posixHome), strict),
-        );
-    const root = paths("repo-root")[0]!;
+    const resolve = (value: string, strict = true) =>
+      resolvedPath(expandHome(value, posixHome), strict);
+    const root = resolve(values["repo-root"]!);
     if (!stat(root).isDirectory())
       throw new Error("--repo-root: expected a directory");
-    const output = paths("out", false)[0]!;
-    const scopePath = paths("in-scope-files")[0]!;
+    const output = resolve(values.out!, false);
+    const scopePath = resolve(values["in-scope-files"]!);
     const inputs = [
-      ...new Map(paths("input").map((path) => [pathKey(path), path])).values(),
+      ...new Map(
+        values.input!.map((value) => {
+          const path = resolve(value);
+          return [pathKey(path), path];
+        }),
+      ).values(),
     ].sort((a, b) => compare(pathKey(a), pathKey(b)));
     if (inputs.some((path) => pathKey(path) === pathKey(output)))
       throw new Error("--out: must not also be an input");
@@ -477,22 +373,21 @@ export function normalizeCandidatesCommand(
     const scope = readScope(
       scopePath,
       root,
-      values.has("allow-missing-in-scope"),
+      values["allow-missing-in-scope"] ?? false,
     );
     const lineCounts = new Map<string, number>();
     const groups = new Map<string, Candidate[]>();
     let rowCount = 0;
     for (const source of inputs) {
-      const lines = decodeUtf8(readFile(source)).split(/\r\n|[\r\n]/u);
+      const lines = decodeUtf8(readFile(source)).split(/\r?\n/u);
       for (const [index, line] of lines.entries()) {
-        if (trim(line) === "") continue;
+        if (line.trim() === "") continue;
         let candidate: Candidate;
         try {
           const row: unknown = JSON.parse(line);
           if (!object(row)) throw new Error("expected a JSON object");
           candidate = normalizeCandidate(row, root, scope, lineCounts);
         } catch (error) {
-          if (error instanceof SymlinkLoopError) throw error;
           throw new Error(
             `${source} row ${index + 1}: ${(error as Error).message}`,
           );
@@ -520,8 +415,7 @@ export function normalizeCandidatesCommand(
     let created = false;
     function* contents() {
       created = true;
-      for (const row of combined)
-        yield Buffer.from(`${stableJson(row)}${windows ? "\r\n" : "\n"}`);
+      for (const row of combined) yield Buffer.from(`${stableJson(row)}\n`);
     }
     try {
       if (windows) {
@@ -546,16 +440,12 @@ export function normalizeCandidatesCommand(
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     }
-    const message = `Combined ${rowCount} candidate rows into ${combined.length} rows in ${output}\n`;
-    process.stdout.write(
-      windows ? message.replace(/\n/gu, "\r\n") : encodePosixPath(message),
+    console.log(
+      `Combined ${rowCount} candidate rows into ${combined.length} rows in ${output}`,
     );
     return 0;
   } catch (error) {
     console.error(`normalize_candidates: ${(error as Error).message}`);
-    return error instanceof SymlinkLoopError ||
-      error instanceof HomeExpansionError
-      ? 1
-      : 2;
+    return 2;
   }
 }
