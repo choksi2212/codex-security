@@ -69,9 +69,11 @@ function worker(root: string): Record<string, boolean> {
   assert.deepEqual(environment("USERPROFILE"), widePath(cwd));
 
   function samePath(actual: Buffer, expected: string): void {
+    const namespaced = (path: string) =>
+      path.startsWith("\\\\?\\") ? path : win32.toNamespacedPath(path);
     assert.equal(
-      win32.toNamespacedPath(pathText(actual)).toLowerCase(),
-      win32.toNamespacedPath(expected).toLowerCase(),
+      namespaced(pathText(actual)).toLowerCase(),
+      namespaced(expected).toLowerCase(),
     );
   }
   samePath(files.absolute(widePath(".")), cwd);
