@@ -63,7 +63,9 @@ function windowsJoin(left: string, right: string): string {
     if (win32.isAbsolute(base)) {
       // Join scopes before restoring the prefix that preserves raw filenames.
       const joined = windowsJoin(base, right);
-      return win32.isAbsolute(joined) && !joined.startsWith("\\\\?\\")
+      return !win32.isAbsolute(right) &&
+        win32.isAbsolute(joined) &&
+        !joined.startsWith("\\\\?\\")
         ? win32.toNamespacedPath(joined)
         : joined;
     }

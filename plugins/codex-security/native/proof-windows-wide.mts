@@ -294,6 +294,15 @@ function worker(root: string): Record<string, boolean> {
       win32.join(cwd, `directory-${name.slice(0, -1)}`),
     );
     files.mkdir(ordinaryDirectory);
+    const missing = files.realpath(
+      widePath(win32.join(cwd, `directory-${name}`, "new.json")),
+      false,
+    );
+    files.writeFile(missing, Buffer.from("new literal child"));
+    assert.equal(
+      files.readFile(widePath(`${pathText(directory)}\\new.json`)).toString(),
+      "new literal child",
+    );
     assert.deepEqual(files.entriesWithTypes(ordinaryDirectory), []);
   }
 
