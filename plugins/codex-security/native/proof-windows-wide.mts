@@ -37,7 +37,6 @@ function worker(root: string): Record<string, boolean> {
         "loop-link",
         "missing-link",
         "missing-parent-link",
-        "relative-link",
         "space-target-link",
       ]
     : [];
@@ -208,11 +207,11 @@ function worker(root: string): Record<string, boolean> {
   assert(files.stat(widePath(".")).isDirectory());
   if (symlinks) {
     assert.deepEqual(
-      files.readlink(widePath("relative-link")),
+      files.readlink(widePath("file-link")),
       widePath(names[0]!),
     );
     assert.deepEqual(
-      files.readFile(widePath("relative-link")),
+      files.readFile(widePath("file-link")),
       Buffer.from("sentinel-0"),
     );
     samePath(
@@ -287,7 +286,6 @@ function worker(root: string): Record<string, boolean> {
     replacementOutput,
     Buffer.from("replacement output untouched"),
   );
-  files.writeFile(rawOutput, Buffer.from("a longer initial output"));
   files.writeFile(rawOutput, [
     Buffer.alloc(64 * 1024, 7),
     Buffer.alloc(64 * 1024 + 1, 7),

@@ -7,7 +7,7 @@ import { windowsFlags as flags } from "./windows-flags.mjs";
 
 const opened = new Error("Captured native open");
 
-for (const [input, expected] of [
+for (const [input, expected, cwd = "C:\\parent\\child"] of [
   ["\\\\?\\C:\\\\..\\file", "\\\\?\\C:\\file"],
   ["\\\\?\\UNC\\server\\share\\\\..\\file", "\\\\?\\UNC\\server\\share\\file"],
   [
@@ -19,11 +19,31 @@ for (const [input, expected] of [
   ["\\\\?\\C:\\child\\.\\..\\", "\\\\?\\C:\\"],
   ["\\\\?\\C:\\trailing.\\", "\\\\?\\C:\\trailing."],
   ["\\\\?\\UNC\\server\\share\\space \\", "\\\\?\\UNC\\server\\share\\space "],
+  ["C:.\\..\\sentinel", "\\\\?\\C:\\parent\\sentinel"],
+  ["\\\\server\\share\\..\\file\\", "\\\\?\\UNC\\server\\share\\file"],
+  ["C:/", "\\\\?\\C:\\"],
+  ["C:\\file\\", "\\\\?\\C:\\file"],
+  [
+    "\\\\server\\share",
+    "\\\\?\\UNC\\server\\share\\",
+    "\\\\server\\share\\nested",
+  ],
+  [
+    "//server/share",
+    "\\\\?\\UNC\\server\\share\\",
+    "\\\\server\\share\\nested",
+  ],
 ] as const) {
-  test(`verbatim realpath preserves its root: ${JSON.stringify(input)}`, () => {
+  test(`realpath opens the normalized path: ${JSON.stringify(input)}`, () => {
     const native = {
       windowsAbsolutePath(path: Buffer) {
-        return { error: 0, value: path };
+        const text = pathText(path);
+        return {
+          error: 0,
+          value: text.startsWith("\\\\?\\")
+            ? path
+            : widePath(win32.resolve(cwd, text)),
+        };
       },
       openWindowsFile(path: Buffer) {
         assert.equal(pathText(path), expected);
@@ -32,57 +52,6 @@ for (const [input, expected] of [
     } as unknown as WindowsBinding;
     assert.throws(
       () => windowsFileSystem(native).realpath(widePath(input)),
-      (error) => error === opened,
-    );
-  });
-}
-
-for (const [input, absolute] of [
-  ["C:.\\..\\sentinel", "C:\\parent\\sentinel"],
-  ["\\\\server\\share\\..\\file\\", "\\\\server\\share\\file\\"],
-  ["C:/", "C:\\"],
-  ["C:\\file\\", "C:\\file\\"],
-] as const) {
-  test(`ordinary realpath uses native absolute resolution: ${JSON.stringify(input)}`, () => {
-    const native = {
-      windowsAbsolutePath(path: Buffer) {
-        return {
-          error: 0,
-          value: widePath(win32.resolve("C:\\parent\\child", pathText(path))),
-        };
-      },
-      openWindowsFile(path: Buffer) {
-        const root = win32.parse(absolute).root;
-        const trimmed = root + absolute.slice(root.length).replace(/\\+$/u, "");
-        assert.equal(pathText(path), win32.toNamespacedPath(trimmed));
-        throw opened;
-      },
-    } as unknown as WindowsBinding;
-    assert.throws(
-      () => windowsFileSystem(native).realpath(widePath(input)),
-      (error) => error === opened,
-    );
-  });
-}
-
-for (const share of ["\\\\server\\share", "//server/share"]) {
-  test(`realpath resolves the UNC share root from a directory on that share: ${share}`, () => {
-    const native = {
-      windowsAbsolutePath(path: Buffer) {
-        return {
-          error: 0,
-          value: widePath(
-            win32.resolve("\\\\server\\share\\nested", pathText(path)),
-          ),
-        };
-      },
-      openWindowsFile(path: Buffer) {
-        assert.equal(pathText(path), "\\\\?\\UNC\\server\\share\\");
-        throw opened;
-      },
-    } as unknown as WindowsBinding;
-    assert.throws(
-      () => windowsFileSystem(native).realpath(widePath(share)),
       (error) => error === opened,
     );
   });
