@@ -158,7 +158,7 @@ describe("built candidate normalizer", () => {
     const f = fixture();
     const locations = [
       location("app/query.py", 4, "sink"),
-      location(),
+      location("./app/routes.py"),
       location("app/query.py", 3, "root_control"),
     ];
     const first = candidate(locations, {

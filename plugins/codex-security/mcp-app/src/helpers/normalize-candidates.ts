@@ -118,7 +118,7 @@ function relativeFile(value: unknown, root: string): [string, string] {
     throw new Error(
       "path: expected a repository-relative path without traversal",
     );
-  const path = resolvedPath(`${root}${sep}${raw}`);
+  const path = resolvedPath(join(root, raw));
   const name = inside(path, root);
   if (!stat(path).isFile()) throw new Error("path: expected a regular file");
   return [name, path];
@@ -139,7 +139,7 @@ function readScope(
       if (allowMissing && (error as NodeJS.ErrnoException).code === "ENOENT") {
         try {
           scope.add(
-            inside(resolvedPath(`${root}${sep}${line}`, false), root, true),
+            inside(resolvedPath(join(root, line), false), root, true),
           );
         } catch (error) {
           throw new Error(

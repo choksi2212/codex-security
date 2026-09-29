@@ -255,7 +255,7 @@ fn main() -> std::io::Result<()> {
         let input_name = raw("input-", 0xd800);
         let scope_name = raw("scope-files-", 0xdc80);
         fs::write(repo.join("source.py"), "source line\n")?;
-        fs::write(repo.join(&scope_name), "source.py\ndeleted.py\n")?;
+        fs::write(repo.join(&scope_name), "./source.py\n./deleted.py\n")?;
         fs::write(repo.join(raw("scope-files-", 0xfffd)), "wrong.py\n")?;
         fs::write(
             repo.join(raw("input-", 0xfffd)),
@@ -264,7 +264,7 @@ fn main() -> std::io::Result<()> {
         fs::write(
             repo.join(&input_name),
             concat!(
-                r#"{"cwe_ids":["CWE-89"],"locations":[{"path":"source.py","#,
+                r#"{"cwe_ids":["CWE-89"],"locations":[{"path":"./source.py","#,
                 r#""start_line":1,"role":"entrypoint"}],"summary":"wide paths","#,
                 r#""evidence":"source evidence"}"#,
                 "\n",
