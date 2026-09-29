@@ -765,7 +765,7 @@ describe("built SECURITY.md helper", () => {
   });
 
   test.skipIf(process.platform !== "win32")(
-    "resolves drive-relative and rooted scopes using the repository drive",
+    "resolves Windows scopes using the repository drive and native normalization",
     () => {
       const { root } = fixture("İrepository");
       write(root, "src/SECURITY.md", "component policy\n");
@@ -774,6 +774,8 @@ describe("built SECURITY.md helper", () => {
       for (const scope of [
         `${drive}src\\app.ts`,
         join(root, "src", "app.ts").slice(2),
+        `${join(root, "src")}.`,
+        `${join(root, "src").slice(2)}.`,
       ]) {
         const result = run(
           ["--repo", root, "--scope", scope],

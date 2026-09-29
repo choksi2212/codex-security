@@ -63,7 +63,7 @@ export function windowsFileSystem(native: WindowsBinding) {
   }
 
   function realpath(path: Buffer, strict = true): Buffer {
-    let current = absolute(path);
+    let current = operationPath(path);
     const missing: string[] = [];
     while (true) {
       try {

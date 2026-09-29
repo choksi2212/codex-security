@@ -80,6 +80,46 @@ for (const [parent, tail] of [
   });
 }
 
+for (const suffix of [".", " "]) {
+  test(`non-strict realpath preserves a parent's literal ${JSON.stringify(suffix)}`, () => {
+    const parent = `C:\\root\\dir${suffix}`;
+    const native = {
+      windowsAbsolutePath(path: Buffer) {
+        const text = pathText(path);
+        return {
+          error: 0,
+          value: widePath(
+            text.startsWith("\\\\?\\") ? text : text.replace(/[. ]+$/u, ""),
+          ),
+        };
+      },
+      openWindowsFile(path: Buffer) {
+        return [
+          win32.toNamespacedPath(parent),
+          "\\\\?\\C:\\root\\dir",
+        ].includes(pathText(path))
+          ? {
+              error: 0,
+              handle: {
+                finalPath: () => ({ error: 0, path }),
+                close: () => 0,
+              },
+            }
+          : { error: 2, handle: null };
+      },
+    } as unknown as WindowsBinding;
+    assert.equal(
+      pathText(
+        windowsFileSystem(native).realpath(
+          widePath(`${parent}\\new.json`),
+          false,
+        ),
+      ),
+      `\\\\?\\${parent}\\new.json`,
+    );
+  });
+}
+
 for (const suffix of ["", "\\child"]) {
   test(`non-strict realpath rejects dangling reparse points${suffix}`, () => {
     let closes = 0;
