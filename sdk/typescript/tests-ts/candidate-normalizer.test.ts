@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, toNamespacedPath } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { PLUGIN_ROOT } from "./plugin-root.js";
 
@@ -183,7 +183,7 @@ describe("built candidate normalizer", () => {
     );
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toBe(
-      `Combined 3 candidate rows into 2 rows in ${f.output}\n`,
+      `Combined 3 candidate rows into 2 rows in ${toNamespacedPath(f.output)}\n`,
     );
     const rows = ledger(f);
     expect(rows).toHaveLength(2);
