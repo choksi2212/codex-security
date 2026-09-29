@@ -288,7 +288,10 @@ function worker(root: string): Record<string, boolean> {
     Buffer.from("replacement output untouched"),
   );
   files.writeFile(rawOutput, Buffer.from("a longer initial output"));
-  files.writeFile(rawOutput, Buffer.alloc(128 * 1024 + 1, 7));
+  files.writeFile(rawOutput, [
+    Buffer.alloc(64 * 1024, 7),
+    Buffer.alloc(64 * 1024 + 1, 7),
+  ]);
   assert.deepEqual(files.readFile(rawOutput), Buffer.alloc(128 * 1024 + 1, 7));
   files.writeFile(rawOutput, Buffer.from("short"));
   const contents = Buffer.alloc(64);
