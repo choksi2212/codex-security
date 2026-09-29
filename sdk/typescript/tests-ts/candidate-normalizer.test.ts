@@ -665,6 +665,31 @@ describe("built candidate normalizer", () => {
   );
 
   test.skipIf(process.platform === "win32")(
+    "ignores unused symlink loops when disambiguating carriage-return paths",
+    () => {
+      const f = fixture();
+      for (const name of ["app/plain.py", "app/literal.py\r"]) {
+        const sibling = name.endsWith("\r") ? name.slice(0, -1) : `${name}\r`;
+        write(join(f.repo, name), "one\n");
+        const loop = join(f.repo, sibling);
+        symlinkSync(loop, loop);
+        write(f.scope, name.replace(/\r$/u, "") + "\r\n");
+        const result = run(f, [[candidate([location(name, 1)])]]);
+        expect(result.status, result.stderr).toBe(0);
+        expect((ledger(f)[0]!["locations"] as Row[])[0]!["path"]).toBe(name);
+      }
+      const loop = join(f.repo, "app/loop.py");
+      symlinkSync(loop, loop);
+      write(f.scope, "app/loop.py\n");
+      const previous = readFileSync(f.output);
+      const result = run(f, [[candidate()]]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Symlink loop");
+      expect(readFileSync(f.output)).toEqual(previous);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
     "disambiguates carriage-return collisions from independent inventory evidence",
     () => {
       const cases = [

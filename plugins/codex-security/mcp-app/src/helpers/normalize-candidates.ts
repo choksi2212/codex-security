@@ -151,8 +151,7 @@ function readScope(
     try {
       relativeFile(value, root);
       return true;
-    } catch (error) {
-      if (error instanceof SymlinkLoopError) throw error;
+    } catch {
       return false;
     }
   };
