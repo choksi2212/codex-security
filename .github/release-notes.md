@@ -8,6 +8,7 @@
 - include C++ headers in scan inventories ([#1079](https://github.com/openai/codex-security/pull/1079))
 - skip already tagged unchanged versions ([#1091](https://github.com/openai/codex-security/pull/1091))
 - upgrade Codex CLI and SDK to 0.159.0 ([#1088](https://github.com/openai/codex-security/pull/1088))
+- upgrade OpenCode SDK to 1.18.32 ([#1090](https://github.com/openai/codex-security/pull/1090))
 <!-- release-section: highlights:end -->
 
 <!-- release-section: upgrades:start -->
