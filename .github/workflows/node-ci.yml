@@ -23,6 +23,7 @@ jobs:
       container-ci: ${{ steps.scope.outputs.container-ci }}
       container-validate: ${{ steps.scope.outputs.container-validate }}
       test-quality: ${{ steps.scope.outputs.test-quality }}
+      workflow-quality: ${{ steps.scope.outputs.workflow-quality }}
 
     steps:
       - name: Checkout pull request for change classification
@@ -45,6 +46,10 @@ jobs:
           container_ci=false
           container_validate=false
           test_quality=false
+          workflow_quality=false
+          if [[ "$EVENT_NAME" == "push" || "$BASE_CHANGED" == "true" ]]; then
+            workflow_quality=true
+          fi
           if [[ "$EVENT_NAME" == "pull_request" && "$BASE_CHANGED" == "true" ]]; then
             container_ci=true
             container_validate=true
@@ -68,6 +73,11 @@ jobs:
                     "$path" == sdk/typescript/_bundled_plugin/* ]]; then
                 plugin_changed=true
               fi
+              case "$path" in
+                .github/workflows/* | .github/actions/* | .github/actionlint.yaml | .github/zizmor.yml)
+                  workflow_quality=true
+                  ;;
+              esac
               case "$path" in
                 .dockerignore | .github/workflows/native-*.yml | \
                   .github/actions/download-native/* | Dockerfile | \
@@ -105,6 +115,7 @@ jobs:
           printf 'container-ci=%s\n' "$container_ci" >> "$GITHUB_OUTPUT"
           printf 'container-validate=%s\n' "$container_validate" >> "$GITHUB_OUTPUT"
           printf 'test-quality=%s\n' "$test_quality" >> "$GITHUB_OUTPUT"
+          printf 'workflow-quality=%s\n' "$workflow_quality" >> "$GITHUB_OUTPUT"
 
       - name: Require a Conventional Commit pull request title
         if: github.event_name == 'pull_request'
@@ -161,6 +172,11 @@ jobs:
           if ((${#files[@]} > 0)); then
             pnpm --dir sdk/typescript exec prettier --check "${files[@]}"
           fi
+
+  workflow-quality:
+    needs: validate-title
+    if: needs.validate-title.outputs.workflow-quality == 'true'
+    uses: ./.github/workflows/workflow-quality.yml
 
   static-checks:
     name: typecheck and formatting
@@ -253,7 +269,6 @@ jobs:
           pnpm --dir sdk/typescript install --frozen-lockfile
           pnpm --dir plugins/codex-security/mcp-app install --frozen-lockfile
       - name: Audit production dependencies
-        continue-on-error: true
         run: pnpm --dir sdk/typescript run audit:prod
       - name: Pack
         working-directory: sdk/typescript
@@ -520,6 +535,7 @@ jobs:
     needs:
       [
         validate-title,
+        workflow-quality,
         static-checks,
         package,
         test,
@@ -535,6 +551,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
+      - name: Require selected workflow checks
+        if: needs.validate-title.outputs.workflow-quality == 'true' && needs.workflow-quality.result != 'success'
+        run: exit 1
       - name: Require every Unix coverage job
         if: needs.validate-title.result != 'success' || (needs.validate-title.outputs.ci-mode == 'full' && (needs.static-checks.result != 'success' || needs.package.result != 'success' || needs.test.result != 'success' || needs.compatibility.result != 'success' || needs.mcp.result != 'success' || needs.plugin-host.result != 'success' || needs.plugin-source.result != 'success')) || (needs.validate-title.outputs.ci-mode != 'full' && needs.validate-title.outputs.ci-mode != 'markdown')
         run: exit 1

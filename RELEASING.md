@@ -62,6 +62,13 @@ dependencies, including transitive packages, with `openai` and `@openai/*` exemp
 Committed lockfiles remain installable. The existing Socket release checks remain
 in place.
 
+The production dependency audit is a blocking step in CI package builds and npm
+release validation. `pnpm --dir sdk/typescript run audit:prod` checks the locked
+production graph at the existing high-severity threshold. High or critical
+advisories and audit service failures stop publication. Resolve dependency
+advisories with dependency and lockfile updates; retry service failures once
+the audit service is available.
+
 ## Version policy before 1.0
 
 While the package is on `0.x`, ordinary changes, including features, use a
