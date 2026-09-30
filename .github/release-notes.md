@@ -13,6 +13,7 @@
 - probe the Codex sandbox before starting a billed scan ([#1084](https://github.com/openai/codex-security/pull/1084))
 - preserve source excerpt line numbering ([#1098](https://github.com/openai/codex-security/pull/1098))
 - bump Codex CLI and SDK to 0.159.2 ([#1100](https://github.com/openai/codex-security/pull/1100))
+- update Linear SDK, smol-toml, and Prettier ([#1101](https://github.com/openai/codex-security/pull/1101))
 <!-- release-section: highlights:end -->
 
 <!-- release-section: upgrades:start -->
