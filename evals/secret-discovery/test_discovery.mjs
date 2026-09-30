@@ -1,0 +1,282 @@
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import { createFixture } from "./fixtures.mjs";
+import { gradeResult } from "./grade.mjs";
+import {
+  codexSettings,
+  prepareEval,
+  runPreparedEval,
+  threadSettings,
+} from "./harness.mjs";
+
+function retainedResult(fixture) {
+  return {
+    findings: fixture.positives.map((expected) => ({
+      title: "Embedded credential",
+      taxonomy: { category: "hardcoded-credentials", cwe: [expected.cwes[0]] },
+      locations: [
+        { path: expected.path, startLine: expected.line, role: "root_control" },
+      ],
+      codeEvidence: [{ code: "credential = [REDACTED]" }],
+    })),
+    coverage: { completeness: "complete", deferred: [], openQuestions: [] },
+  };
+}
+
+test("counts every retained secret location, including unused and integration source", () => {
+  const fixture = createFixture();
+  const report = gradeResult(retainedResult(fixture), fixture);
+  assert.equal(report.passed, true);
+  assert.equal(report.recall, 1);
+  assert.deepEqual(
+    report.cases.map((entry) => entry.id),
+    [
+      "active-source",
+      "unused-source",
+      "integration-source",
+      "dotenv-url",
+      "account-config",
+      "private-key",
+    ],
+  );
+});
+
+test("resolved, deferred, and intermediate findings do not satisfy final recall", () => {
+  const fixture = createFixture();
+  const result = retainedResult(fixture);
+  result.coverage.deferred = result.findings;
+  result.resolved_questions = result.findings;
+  result.findings = [];
+  const report = gradeResult(result, fixture);
+  assert.equal(report.passed, false);
+  assert.equal(report.recall, 0);
+});
+
+for (const [name, mutate] of [
+  [
+    "wrong source line",
+    (finding) => {
+      finding.locations[0].startLine = 1;
+    },
+  ],
+  [
+    "wrong source path",
+    (finding) => {
+      finding.locations[0].path = "src/absent.py";
+    },
+  ],
+  [
+    "unrelated CWE",
+    (finding) => {
+      finding.taxonomy.cwe = ["CWE-89"];
+    },
+  ],
+  [
+    "unrelated category",
+    (finding) => {
+      finding.taxonomy.category = "sql-injection";
+    },
+  ],
+  [
+    "line range outside source",
+    (finding) => {
+      finding.locations[0].endLine = 100000;
+    },
+  ],
+]) {
+  test(`rejects ${name}`, () => {
+    const fixture = createFixture();
+    const result = retainedResult(fixture);
+    mutate(result.findings[0]);
+    const report = gradeResult(result, fixture);
+    assert.equal(report.passed, false);
+    assert.equal(report.cases[0].found, false);
+  });
+}
+
+test("accepts a secret's valid source range and sensitive-data category", () => {
+  const fixture = createFixture();
+  const result = retainedResult(fixture);
+  result.findings[0].locations[0].endLine = fixture.positives[0].line + 1;
+  result.findings[0].taxonomy.category = "sensitive-data-exposure";
+  assert.equal(gradeResult(result, fixture).passed, true);
+});
+
+for (const cwe of ["CWE-200", "CWE-540"]) {
+  test(`accepts ${cwe} for specifically categorized credential exposure`, () => {
+    const fixture = createFixture();
+    const result = retainedResult(fixture);
+    for (const finding of result.findings) finding.taxonomy.cwe = [cwe];
+    assert.equal(gradeResult(result, fixture).passed, true);
+
+    result.findings[0].taxonomy.category = "sensitive-data-exposure";
+    const report = gradeResult(result, fixture);
+    assert.equal(report.passed, false);
+    assert.equal(report.cases[0].found, false);
+  });
+}
+
+for (const negativeIndex of [0, 1, 2, 3]) {
+  test(`rejects a finding against negative control ${negativeIndex}`, () => {
+    const fixture = createFixture();
+    const result = retainedResult(fixture);
+    result.findings.push({
+      taxonomy: { category: "hardcoded-credentials", cwe: ["CWE-798"] },
+      locations: [
+        {
+          path: fixture.negatives[negativeIndex],
+          startLine: 1,
+          role: "root_control",
+        },
+      ],
+    });
+    const report = gradeResult(result, fixture);
+    assert.equal(report.recall, 1);
+    assert.equal(report.falsePositiveCount, 1);
+    assert.equal(report.passed, false);
+  });
+}
+
+test("benign supporting context does not become a false positive", () => {
+  const fixture = createFixture();
+  const result = retainedResult(fixture);
+  result.findings[0].locations.push({
+    path: fixture.negatives[0],
+    startLine: 1,
+    role: "supporting",
+  });
+  assert.equal(gradeResult(result, fixture).passed, true);
+});
+
+test("a supporting citation cannot satisfy an independently missed exposure", () => {
+  const fixture = createFixture();
+  const result = retainedResult(fixture);
+  const unused = result.findings.splice(1, 1)[0];
+  result.findings[0].locations.push({
+    ...unused.locations[0],
+    role: "supporting",
+  });
+  const report = gradeResult(result, fixture);
+  assert.equal(report.cases[1].found, false);
+  assert.equal(report.passed, false);
+});
+
+test("detects token and multiline private-key leakage anywhere in the result", () => {
+  const fixture = createFixture();
+  const result = retainedResult(fixture);
+  result.findings[0].codeEvidence[0].code = fixture.files["src/client.py"];
+  result.coverage.openQuestions.push(fixture.files["src/signing.mjs"]);
+  const report = gradeResult(result, fixture);
+  assert.equal(report.passed, false);
+  assert.ok(report.leakedValueCount >= 2);
+  for (const value of fixture.secretValues) {
+    assert.equal(
+      JSON.stringify(report).includes(value),
+      false,
+      "grade output must not repeat leaked values",
+    );
+  }
+});
+
+test("incomplete coverage cannot pass even with all positive findings", () => {
+  const fixture = createFixture();
+  const result = retainedResult(fixture);
+  result.coverage.completeness = "partial";
+  assert.equal(gradeResult(result, fixture).passed, false);
+});
+
+test("stages production prompt unchanged and no labels; grades only the final SDK response", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "source-audit-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const prepared = await prepareEval(root);
+  const production = await readFile(
+    new URL(
+      "../../plugins/codex-security/references/core-scan.md",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.equal(
+    await readFile(join(prepared.runtime, "references/core-scan.md"), "utf8"),
+    production,
+  );
+  assert.ok(prepared.prompt.endsWith(production));
+  const staged = (
+    await readdir(prepared.repo, { recursive: true, withFileTypes: true })
+  )
+    .filter((entry) => entry.isFile())
+    .map((entry) =>
+      join(entry.parentPath, entry.name)
+        .slice(prepared.repo.length + 1)
+        .replaceAll("\\", "/"),
+    );
+  assert.deepEqual(staged.sort(), Object.keys(prepared.fixture.files).sort());
+  for (const expected of prepared.fixture.positives)
+    assert.equal(prepared.prompt.includes(expected.id), false);
+  for (const value of prepared.fixture.secretValues)
+    assert.equal(prepared.prompt.includes(value), false);
+
+  let settings;
+  const fakeCodex = {
+    startThread(options) {
+      settings = options;
+      return {
+        async run(prompt, options) {
+          assert.equal(prompt, prepared.prompt);
+          assert.ok(options.outputSchema.properties.findings);
+          return {
+            items: [
+              {
+                type: "agent_message",
+                text: JSON.stringify(retainedResult(prepared.fixture)),
+              },
+            ],
+            finalResponse: JSON.stringify({
+              findings: [],
+              coverage: { completeness: "complete" },
+            }),
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        },
+      };
+    },
+  };
+  const { report } = await runPreparedEval(prepared, fakeCodex);
+  assert.equal(report.recall, 0);
+  assert.equal(settings.sandboxMode, undefined);
+  assert.deepEqual(settings.additionalDirectories, [prepared.runtime]);
+  assert.equal(settings.workingDirectory, prepared.repo);
+});
+
+test("named read-only profile excludes gold and credentials without a legacy sandbox override", () => {
+  const codexPath = "/tmp/native-package/bin/codex";
+  const settings = codexSettings("/tmp/eval-home", codexPath, {
+    TEST_VALUE: "present",
+  });
+  assert.deepEqual(settings.env, {
+    TEST_VALUE: "present",
+    CODEX_HOME: "/tmp/eval-home",
+    CODEX_SQLITE_HOME: "/tmp/eval-home",
+    CODEX_CLI_PATH: codexPath,
+  });
+  assert.equal(settings.codexPathOverride, codexPath);
+  assert.equal(settings.config.default_permissions, "discovery_eval");
+  assert.equal(settings.config.features.plugins, false);
+  assert.equal(settings.config.features.memories, false);
+  assert.equal(settings.configOverrides.length, 1);
+  assert.match(
+    settings.configOverrides[0],
+    /":minimal"="read",":workspace_roots"="read"/,
+  );
+  assert.match(settings.configOverrides[0], /"\/tmp\/eval-home"="deny"/);
+  assert.match(settings.configOverrides[0], /"\/tmp\/native-package"="read"/);
+  assert.match(settings.configOverrides[0], /network=\{enabled=false\}/);
+  assert.doesNotMatch(settings.configOverrides[0], /":root"="read"/);
+  assert.equal(
+    threadSettings({ repo: "/tmp/repo", runtime: "/tmp/runtime" }).sandboxMode,
+    undefined,
+  );
+});
