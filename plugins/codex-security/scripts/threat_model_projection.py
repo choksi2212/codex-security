@@ -30,6 +30,9 @@ def threat_model_body(model: dict[str, Any], *, heading_level: int = 2) -> str:
         values = model.get(key)
         if not isinstance(values, list) or not values:
             continue
+        for index, value in enumerate(values):
+            if not isinstance(value, str):
+                raise ValueError(f"threatModel.{key}[{index}]: expected a string")
         sections.append(f"{'#' * heading_level} {heading}")
         sections.append("\n".join("- " + value.replace("\n", "\n  ") for value in values))
     return "\n\n".join(sections)

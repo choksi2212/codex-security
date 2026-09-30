@@ -22,12 +22,14 @@ import {
   type CoverageDocument,
   type ScanManifest,
 } from "../src/index.js";
+import { resolvePluginPython, runWorkbench } from "../src/runtime.js";
 import {
   SYNTHETIC_CREDENTIALS,
   capture,
   dependencies,
 } from "./cli-fixtures.js";
 import { PLUGIN_ROOT } from "./plugin-root.js";
+import { runCommand } from "./support/shell.js";
 
 async function copyCompletedScan(root: string): Promise<string> {
   const scan = join(root, "scan");
@@ -103,6 +105,83 @@ describe("CLI", () => {
       ),
     ).toBe(0);
     expect(exportedScanDir).toBe(scanDir);
+  });
+
+  test("uses --python for saved-scan selection and export when PYTHON is unavailable", async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), "codex-security-export-python-")),
+    );
+    try {
+      const python = await resolvePluginPython();
+      const repository = join(root, "repository");
+      const scanDir = join(root, "scan");
+      await mkdir(repository);
+      await mkdir(scanDir, { mode: 0o700 });
+      const environment = {
+        ...exportEnvironment(),
+        CODEX_HOME: join(root, "codex-home"),
+        CODEX_SECURITY_STATE_DIR: join(root, "state"),
+        PYTHON: join(root, "missing-python"),
+      };
+      const workbench = (args: readonly string[]) =>
+        runWorkbench({ python, pluginRoot: PLUGIN_ROOT, environment }, args);
+      const registered = await workbench([
+        "register-cli-scan",
+        "--repository",
+        repository,
+        "--scan-dir",
+        scanDir,
+        "--recipe-json",
+        JSON.stringify({
+          config: {},
+          mode: "standard",
+          repository,
+          target: { kind: "repository", paths: [] },
+        }),
+      ]);
+      const scanId = registered["scanId"] as string;
+      await copyCompletedScan(root);
+      const content = "# Saved model\n\nSynthetic component boundaries.\n";
+      for (const name of ["scan-manifest", "findings", "coverage"]) {
+        const path = join(scanDir, `${name}.json`);
+        const document = JSON.parse(await readFile(path, "utf8"));
+        if (name === "scan-manifest") {
+          document.scan.id = scanId;
+          document.scan.target.kind = "directory_snapshot";
+          document.scan.threatModel = { format: "markdown", content };
+          delete document.scan.sealedAt;
+          delete document.scan.artifacts;
+        } else {
+          document.scanId = scanId;
+          if (name === "findings") document.findings = [];
+        }
+        await writeFile(path, JSON.stringify(document));
+      }
+      await workbench(["complete-scan", "--scan-id", scanId]);
+
+      for (const selector of [["--scan", scanId.slice(0, 8)], []]) {
+        const result = await runCommand(
+          process.execPath,
+          [
+            join(import.meta.dir, "../src/cli.ts"),
+            "export",
+            ...selector,
+            "--artifact",
+            "threat-model",
+            "--output",
+            "-",
+            "--python",
+            python,
+          ],
+          { cwd: repository, env: environment, timeout: 30_000 },
+        );
+        expect(result.stderr).toBe("");
+        expect(result.status).toBe(0);
+        expect(result.stdout).toStartWith(content);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("exports a saved provisional model by scan prefix without starting Codex", async () => {

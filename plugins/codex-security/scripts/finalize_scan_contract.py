@@ -160,8 +160,8 @@ def threat_model_provenance(manifest: dict[str, Any]) -> dict[str, Any]:
             "status": manifest.get("status", "completed"),
             "provisional": manifest.get("status", "completed") != "completed",
         }
-    scan = manifest.get("scan", {})
-    target = scan.get("target", {})
+    scan = _require_dict(manifest, "scan", "manifest")
+    target = _require_dict(scan, "target", "manifest.scan") if "target" in scan else {}
     status = scan.get("status")
     if status == "completed" and not scan.get("sealedAt"):
         status = "draft"
@@ -194,7 +194,11 @@ def _read_saved_threat_model(
         if not (scan_dir / filename).exists():
             continue
         manifest = _read_scan_local_json(scan_dir, filename, filename)
-        scan = manifest.get("scan", {}) if filename == "scan-manifest.json" else manifest
+        scan = (
+            _require_dict(manifest, "scan", "manifest")
+            if filename == "scan-manifest.json"
+            else manifest
+        )
         if (
             validate_seal
             and filename == "scan-manifest.json"
@@ -259,13 +263,39 @@ def write_threat_model_projection_if_possible(
 ) -> str | None:
     """A convenience document failure must not discard saved canonical content."""
     try:
+        saved_manifest = manifest
+        if saved_manifest is None and (scan_dir / "scan-manifest.json").exists():
+            saved_manifest = _read_scan_local_json(
+                scan_dir, "scan-manifest.json", "scan-manifest.json"
+            )
+        if (
+            saved_manifest is not None
+            and saved_manifest.get("documentType") != "codex-security.policy-draft"
+        ):
+            scan = _require_dict(saved_manifest, "scan", "manifest")
+            artifacts = (
+                _require_list(scan, "artifacts", "manifest.scan") if "artifacts" in scan else []
+            )
+            for index, artifact in enumerate(artifacts):
+                if not isinstance(artifact, dict):
+                    continue
+                context = f"manifest.scan.artifacts[{index}]"
+                path = _require_portable_relative_path(
+                    _require_str(artifact, "path", context), f"{context}.path"
+                )
+                if path.lower() == "threatmodel.md":
+                    return None
         if manifest is None:
             saved = _read_saved_threat_model(scan_dir, validate_seal=False)
             if saved is None:
                 return None
             contents = saved[1]
         else:
-            scan = manifest.get("scan", manifest)
+            scan = (
+                manifest
+                if manifest.get("documentType") == "codex-security.policy-draft"
+                else _require_dict(manifest, "scan", "manifest")
+            )
             model = scan.get("threatModel")
             if not isinstance(model, dict):
                 return None

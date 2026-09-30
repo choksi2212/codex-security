@@ -643,6 +643,62 @@ def test_model_only_draft_is_available_before_findings_and_survives_stop(
     assert (scan_dir / "threatmodel.md").read_text().startswith(model["content"])
 
 
+@pytest.mark.parametrize("malformation", ["scan", "target", "assets"])
+def test_malformed_model_keeps_history_available_for_semantic_repair(
+    tmp_path: Path, malformation: str
+) -> None:
+    state_dir = tmp_path / "state"
+    target = tmp_path / "target"
+    target.mkdir()
+    saved = create_saved_workspace(state_dir, target)
+    started = start_delivered_scan(
+        state_dir,
+        "--workspace-id",
+        str(saved["id"]),
+        "--scan-root",
+        str(tmp_path / "scans"),
+    )["results"]
+    scan_id, scan_dir = str(started["scanId"]), Path(str(started["scanDir"]))
+    write_completed_contract(scan_dir, scan_id, target)
+    documents = {
+        key: json.loads((scan_dir / filename).read_text())
+        for key, filename in (
+            ("manifest", "scan-manifest.json"),
+            ("findings", "findings.json"),
+            ("coverage", "coverage.json"),
+        )
+    }
+    model = {"summary": "Queue boundaries.", "assets": ["Stored messages"]}
+    documents["manifest"]["scan"].update(threatModel=model, complete=False)
+    malformed = json.loads(json.dumps(documents["manifest"]))
+    if malformation == "scan":
+        malformed["scan"] = None
+    elif malformation == "target":
+        malformed["scan"]["target"] = None
+    else:
+        malformed["scan"]["threatModel"]["assets"] = [{}]
+    (scan_dir / "scan-manifest.json").write_text(json.dumps(malformed))
+
+    active = run_workbench(state_dir, "get-scan", "--scan-id", scan_id)["scan"]
+    assert active["progress"]["status"] == "running"
+    assert active["threatModelAvailable"] is False
+    reopened = run_workbench(state_dir, "get-workspace", "--workspace-id", str(saved["id"]))
+    assert reopened["results"]["scanId"] == scan_id
+    assert reopened["results"]["threatModelAvailable"] is False
+
+    draft = scan_dir / "drafts" / f"{uuid.uuid4()}.json"
+    draft.parent.mkdir()
+    draft.write_text(json.dumps(documents))
+    repaired = run_workbench(
+        state_dir, "write-scan-draft", "--scan-id", scan_id, "--draft-path", str(draft)
+    )
+    assert repaired["status"] == "draft_written"
+    active = run_workbench(state_dir, "get-scan", "--scan-id", scan_id)["scan"]
+    assert active["threatModelAvailable"] is True
+    assert active["threatModel"] == model
+    assert "Stored messages" in (scan_dir / "threatmodel.md").read_text()
+
+
 def test_completed_findings_export_inside_scan_directory(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     target = tmp_path / "target"

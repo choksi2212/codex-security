@@ -123,6 +123,59 @@ class ThreatModelProjectionTest(unittest.TestCase):
         with self.assertRaisesRegex(FINALIZER.ContractError, "sealed artifact changed"):
             FINALIZER.build_threat_model_export(self.scan_dir)
 
+    def test_projection_preserves_existing_sealed_threat_model(self) -> None:
+        self.manifest["scan"]["threatModel"] = {"summary": "Canonical queue boundaries."}
+        self.write_scan()
+        FINALIZER.finalize_scan(self.scan_dir)
+        original = b"# Historical model\n\nRetained sealed evidence.\n"
+        document = self.scan_dir / "threatmodel.md"
+        document.write_bytes(original)
+        manifest = self.read_json("scan-manifest.json")
+        manifest["scan"]["artifacts"].append(
+            FINALIZER._artifact_record(self.scan_dir, "threatmodel.md", "text/markdown")
+        )
+        self.write_json("scan-manifest.json", manifest)
+        sealed_manifest = (self.scan_dir / "scan-manifest.json").read_bytes()
+
+        FINALIZER.finalize_scan(self.scan_dir)
+        self.assertEqual(document.read_bytes(), original)
+        written = subprocess.run(
+            [
+                sys.executable,
+                str(Path(FINALIZER.__file__)),
+                "--scan-dir",
+                str(self.scan_dir),
+                "--write-threat-model",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(written.returncode, 0, written.stderr)
+        self.assertEqual(document.read_bytes(), original)
+        self.assertEqual((self.scan_dir / "scan-manifest.json").read_bytes(), sealed_manifest)
+        self.assertEqual(
+            FINALIZER.build_findings_export(self.scan_dir, "json"),
+            (self.scan_dir / "findings.json").read_bytes(),
+        )
+        self.assertIn(
+            b"Canonical queue boundaries.", FINALIZER.build_threat_model_export(self.scan_dir)
+        )
+
+    def test_malformed_model_is_reported_without_discarding_saved_content(self) -> None:
+        self.manifest["scan"]["threatModel"] = {"summary": "Queue boundaries.", "assets": [None]}
+        self.write_scan()
+        original = (self.scan_dir / "scan-manifest.json").read_bytes()
+        with self.assertRaisesRegex(
+            FINALIZER.ContractError, r"threatModel.assets\[0\]: expected a string"
+        ):
+            FINALIZER.build_threat_model_export(self.scan_dir)
+        with mock.patch("sys.stderr", new_callable=io.StringIO):
+            warning = FINALIZER.write_threat_model_projection_if_possible(self.scan_dir)
+        self.assertIn("threatModel.assets[0]: expected a string", warning)
+        self.assertEqual((self.scan_dir / "scan-manifest.json").read_bytes(), original)
+        self.assertFalse((self.scan_dir / "threatmodel.md").exists())
+
     def test_exports_legacy_documents_without_reformatting_or_mutating_them(self) -> None:
         body = "# Existing Model\n\n    Preserve indentation.\n"
         for filename in (

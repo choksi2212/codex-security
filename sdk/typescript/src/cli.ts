@@ -1201,6 +1201,7 @@ interface CliDependencies {
     args: readonly string[],
     input?: string,
     signal?: AbortSignal,
+    pythonPath?: string,
   ): Promise<JsonObject>;
   matchFindings: typeof matchScanFindings;
   checkForUpdate(signal: AbortSignal): Promise<UpdateNotice | undefined>;
@@ -1286,12 +1287,16 @@ const DEFAULT_DEPENDENCIES: CliDependencies = {
     return options?.trim === false ? stdout : stdout.trim();
   },
   exportFindings: runArtifactExport,
-  runWorkbench: async (args, input, signal) => {
+  runWorkbench: async (args, input, signal, pythonPath) => {
     const environment = {
       ...exportEnvironment(),
       CODEX_SECURITY_STATE_DIR: codexSecurityStateDirectory(),
     };
-    const python = await resolvePluginPython({ environment, signal });
+    const python = await resolvePluginPython({
+      configuredPath: pythonPath,
+      environment,
+      signal,
+    });
     return await runWorkbench(
       {
         python,
@@ -1736,9 +1741,12 @@ export async function main(
     args: readonly string[],
     select: (value: JsonObject) => JsonObject | Promise<JsonObject> = (value) =>
       value,
+    pythonPath?: string,
   ): Promise<JsonObject> => {
     try {
-      return await select(await dependencies.runWorkbench(args));
+      return await select(
+        await dependencies.runWorkbench(args, undefined, undefined, pythonPath),
+      );
     } catch (error) {
       errorOutput.write(`codex-security: ${errorMessage(error)}\n`);
       exitCode = 2;
@@ -1748,6 +1756,7 @@ export async function main(
   const latestScans = async (
     count = 1,
     status: "complete" | "any" = "complete",
+    pythonPath?: string,
   ): Promise<SavedScan[] | undefined> => {
     const result = await history(
       [
@@ -1769,6 +1778,7 @@ export async function main(
         }
         return value;
       },
+      pythonPath,
     );
     return result?.["scans"] as SavedScan[] | undefined;
   };
@@ -4699,8 +4709,19 @@ export async function main(
           const scanDir =
             args.scanDir ??
             (options.scan === undefined
-              ? (await latestScans())?.[0]?.scanDir
-              : (await resolveSavedScan(options.scan, dependencies)).scanDir);
+              ? (await latestScans(1, "complete", options.python))?.[0]?.scanDir
+              : (
+                  await resolveSavedScan(options.scan, {
+                    currentDirectory: dependencies.currentDirectory,
+                    runWorkbench: (args, input) =>
+                      dependencies.runWorkbench(
+                        args,
+                        input,
+                        undefined,
+                        options.python,
+                      ),
+                  })
+                ).scanDir);
           if (scanDir === undefined) return;
           exitCode = await runExport(
             {
