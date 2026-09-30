@@ -15,6 +15,8 @@
 - bump Codex CLI and SDK to 0.159.2 ([#1100](https://github.com/openai/codex-security/pull/1100))
 - update Linear SDK, smol-toml, and Prettier ([#1101](https://github.com/openai/codex-security/pull/1101))
 - exclude nested Git metadata from scan inventories ([#1099](https://github.com/openai/codex-security/pull/1099))
+- bump fast-uri from 3.1.7 to 3.1.8 in /sdk/typescript ([#1106](https://github.com/openai/codex-security/pull/1106))
+- bump fast-uri from 3.1.7 to 3.1.8 in /plugins/codex-security/mcp-app ([#1109](https://github.com/openai/codex-security/pull/1109))
 <!-- release-section: highlights:end -->
 
 <!-- release-section: upgrades:start -->
