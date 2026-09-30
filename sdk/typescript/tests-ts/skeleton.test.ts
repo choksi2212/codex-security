@@ -198,6 +198,7 @@ describe("TypeScript package skeleton", () => {
       "mcp",
       "plugin-host",
       "plugin-source",
+      "container-validate",
     ]);
     expect(jobs["windows"]?.needs).toEqual([
       "validate-title",
