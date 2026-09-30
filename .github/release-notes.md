@@ -10,6 +10,7 @@
 - upgrade Codex CLI and SDK to 0.159.0 ([#1088](https://github.com/openai/codex-security/pull/1088))
 - upgrade OpenCode SDK to 1.18.32 ([#1090](https://github.com/openai/codex-security/pull/1090))
 - fall back on Python AST recursion errors ([#1094](https://github.com/openai/codex-security/pull/1094))
+- probe the Codex sandbox before starting a billed scan ([#1084](https://github.com/openai/codex-security/pull/1084))
 <!-- release-section: highlights:end -->
 
 <!-- release-section: upgrades:start -->

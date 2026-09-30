@@ -57,6 +57,7 @@ import {
   PluginBootstrapError,
   PluginPythonUnavailableError,
   type ProtectedScanPathKind,
+  SandboxUnavailableError,
   errorMessage,
 } from "./errors.js";
 import type { JsonObject } from "./config.js";
@@ -87,6 +88,7 @@ const CREDENTIAL_LOCK_POLL_MILLISECONDS = 25;
 const INCOMPLETE_CREDENTIAL_LOCK_MILLISECONDS = 30_000;
 const MAX_PROCESS_ID = 2_147_483_647;
 const MAX_WINDOWS_CREDENTIAL_ACL_STDERR = 64 * 1024;
+const SANDBOX_PROBE_TIMEOUT_MILLISECONDS = 10_000;
 const PLUGIN_HELPER_SECRET_ENVIRONMENT_VARIABLES = new Set([
   "OPENAI_API_KEY",
   "CODEX_API_KEY",
@@ -2775,6 +2777,39 @@ export async function runCodexCommand(
   });
   child.stdin.end(input);
   return await completion;
+}
+
+export async function probeCodexSandbox(
+  command: CodexCommand,
+  environment: ProcessEnvironment,
+  signal?: AbortSignal,
+): Promise<void> {
+  // This preflight covers the Unix sandbox backends.
+  if (process.platform === "win32") return;
+  // Reuse the resolved Codex executable instead of looking up a probe on PATH.
+  const args = ["sandbox", "--", command.command, "--version"];
+  const timeout = AbortSignal.timeout(SANDBOX_PROBE_TIMEOUT_MILLISECONDS);
+  let detail: string;
+  try {
+    const result = await runCodexCommand(
+      command,
+      args,
+      environment,
+      undefined,
+      signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
+    );
+    if (result.success) return;
+    detail =
+      result.stderr.trim() ||
+      result.stdout.trim() ||
+      `Codex exited with status ${result.exitCode}.`;
+  } catch (error) {
+    signal?.throwIfAborted();
+    detail = processErrorDetail(error);
+  }
+  throw new SandboxUnavailableError(
+    `Codex could not run a command in its sandbox; reproduce with '${command.command} ${args.join(" ")}'. On Linux this usually means unprivileged user namespaces are restricted (kernel.apparmor_restrict_unprivileged_userns=1 on Ubuntu 24.04 and later), which Bubblewrap needs; inside the container image, use the AppArmor profile and Compose override from the SDK README. Codex reported: ${detail}`,
+  );
 }
 
 async function runPluginCommand(
