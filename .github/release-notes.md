@@ -14,6 +14,7 @@
 - preserve source excerpt line numbering ([#1098](https://github.com/openai/codex-security/pull/1098))
 - bump Codex CLI and SDK to 0.159.2 ([#1100](https://github.com/openai/codex-security/pull/1100))
 - update Linear SDK, smol-toml, and Prettier ([#1101](https://github.com/openai/codex-security/pull/1101))
+- exclude nested Git metadata from scan inventories ([#1099](https://github.com/openai/codex-security/pull/1099))
 <!-- release-section: highlights:end -->
 
 <!-- release-section: upgrades:start -->
