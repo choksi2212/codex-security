@@ -5,7 +5,7 @@ on:
     paths:
       - .github/workflows/published-install-smoke.yml
       - sdk/typescript/scripts/smoke-published-package.mjs
-      - sdk/typescript/scripts/package-smoke-process.mjs
+      - sdk/typescript/scripts/package-smoke-npm.mjs
       - sdk/typescript/scripts/package-smoke-timeouts.mjs
       - sdk/typescript/tests-ts/published-install-smoke.test.ts
   schedule:

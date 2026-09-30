@@ -16,10 +16,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { packageSmokeTimeouts } from "./package-smoke-timeouts.mjs";
-import {
-  resolveNpm,
-  runPackageCommand as run,
-} from "./package-smoke-process.mjs";
+import { resolveNpm } from "./package-smoke-npm.mjs";
 
 const {
   commandTimeoutMs: PACKAGE_SMOKE_TIMEOUT_MS,
@@ -71,6 +68,47 @@ async function resolveArchive() {
   }
 
   return join(archiveDirectory, archives[0].name);
+}
+
+function run(
+  command,
+  args,
+  {
+    cwd,
+    env,
+    capture = false,
+    windowsVerbatimArguments = false,
+    timeout = PACKAGE_SMOKE_TIMEOUT_MS,
+  } = {},
+) {
+  const result = spawnSync(command, args, {
+    cwd,
+    env,
+    encoding: "utf8",
+    stdio: capture ? "pipe" : "inherit",
+    timeout,
+    killSignal: "SIGKILL",
+    windowsVerbatimArguments,
+    windowsHide: true,
+  });
+
+  if (result.error?.code === "ETIMEDOUT") {
+    throw new Error(
+      `Package smoke command timed out after ${timeout} ms: ${command}.`,
+      { cause: result.error },
+    );
+  }
+  if (result.error !== undefined) {
+    throw new Error(`Failed to run ${command}.`, { cause: result.error });
+  }
+  if (result.status !== 0) {
+    const details = capture ? `\n${result.stderr.trim()}` : "";
+    throw new Error(
+      `${command} exited with status ${result.status}.${details}`,
+    );
+  }
+
+  return result.stdout ?? "";
 }
 
 async function pluginFiles(directory) {

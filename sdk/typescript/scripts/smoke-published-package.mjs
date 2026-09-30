@@ -1,15 +1,25 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  resolveNpm,
-  runPackageCommand as run,
-} from "./package-smoke-process.mjs";
+import { resolveNpm } from "./package-smoke-npm.mjs";
 import { packageSmokeTimeouts } from "./package-smoke-timeouts.mjs";
 
 const packageName = "@openai/codex-security";
+const { commandTimeoutMs, installTimeoutMs } = packageSmokeTimeouts();
+
+function run(command, args, options) {
+  return execFileSync(command, args, {
+    encoding: "utf8",
+    stdio: "pipe",
+    timeout: commandTimeoutMs,
+    killSignal: "SIGKILL",
+    windowsHide: true,
+    ...options,
+  });
+}
 
 export async function verifyInstalledPackage(consumer, environment) {
   const installedRoot = join(
@@ -24,7 +34,7 @@ export async function verifyInstalledPackage(consumer, environment) {
   console.log(
     `Checking ${packageName}@${manifest.version} on ${process.platform}/${process.arch}, Node ${process.version}.`,
   );
-  const options = { cwd: consumer, env: environment, capture: true };
+  const options = { cwd: consumer, env: environment };
   const shim = join(
     consumer,
     "node_modules",
@@ -100,7 +110,7 @@ export async function verifyInstalledPackage(consumer, environment) {
   );
 }
 
-export async function smokePublishedPackage() {
+async function smokePublishedPackage() {
   const consumer = await mkdtemp(join(tmpdir(), "codex-security-published-"));
   try {
     await writeFile(
@@ -126,7 +136,8 @@ export async function smokePublishedPackage() {
       ],
       {
         cwd: consumer,
-        timeout: packageSmokeTimeouts().installTimeoutMs,
+        timeout: installTimeoutMs,
+        stdio: "inherit",
       },
     );
 

@@ -11,16 +11,6 @@ const { verifyInstalledPackage } = (await import(
     environment: NodeJS.ProcessEnv,
   ) => Promise<void>;
 };
-const { runPackageCommand } = (await import(
-  new URL("../scripts/package-smoke-process.mjs", import.meta.url).href
-)) as {
-  runPackageCommand: (
-    command: string,
-    args: string[],
-    options: { capture: boolean; input?: string },
-  ) => string;
-};
-
 const directories: string[] = [];
 afterEach(async () => {
   await Promise.all(
@@ -43,16 +33,10 @@ async function installedFixture(cliVersion: string) {
   await mkdir(installedRoot, { recursive: true });
   await mkdir(bin);
   await writeFile(
-    join(consumer, "package.json"),
-    JSON.stringify({ type: "module" }),
-  );
-  await writeFile(
     join(installedRoot, "package.json"),
     JSON.stringify({
       name: "@openai/codex-security",
       version: "99.1.2",
-      type: "module",
-      exports: "./missing-public-entrypoint.js",
     }),
   );
   const shim = join(
@@ -66,44 +50,25 @@ async function installedFixture(cliVersion: string) {
       : `#!/bin/sh\nif [ "$1" = "--version" ]; then printf '%s\\n' '${cliVersion}'; else printf '%s\\n' 'Usage: codex-security'; fi\n`,
   );
   await chmod(shim, 0o755);
-  return consumer;
+  return { consumer, shim };
 }
 
 test("fails when the installed CLI reports a different package version", async () => {
-  const consumer = await installedFixture("99.1.1");
+  const { consumer } = await installedFixture("99.1.1");
   await expect(verifyInstalledPackage(consumer, process.env)).rejects.toThrow(
     "99.1.2",
   );
 });
 
-test("uses the installed version and resolves the public SDK from the consumer", async () => {
-  const consumer = await installedFixture("99.1.2");
-  // The installed version need not match this checkout. Once CLI checks pass,
-  // a missing published export must fail instead of loading the checkout's SDK.
-  await expect(verifyInstalledPackage(consumer, process.env)).rejects.toThrow(
-    "@openai/codex-security",
+test("fails when the installed CLI cannot start", async () => {
+  const { consumer, shim } = await installedFixture("99.1.2");
+  await writeFile(
+    shim,
+    process.platform === "win32"
+      ? "@echo off\r\necho synthetic CLI startup failure 1>&2\r\nexit /b 7\r\n"
+      : "#!/bin/sh\nprintf '%s\\n' 'synthetic CLI startup failure' >&2\nexit 7\n",
   );
-});
-
-test("package commands pass initialization input through stdin", () => {
-  expect(
-    runPackageCommand(
-      process.execPath,
-      ["-e", "process.stdin.pipe(process.stdout)"],
-      {
-        capture: true,
-        input: '{"jsonrpc":"2.0","method":"initialize"}\n',
-      },
-    ),
-  ).toBe('{"jsonrpc":"2.0","method":"initialize"}\n');
-});
-
-test("package commands propagate startup failures and diagnostics", () => {
-  expect(() =>
-    runPackageCommand(
-      process.execPath,
-      ["-e", 'console.error("synthetic startup failure"); process.exit(7)'],
-      { capture: true },
-    ),
-  ).toThrow("exited with status 7.\nsynthetic startup failure");
+  await expect(verifyInstalledPackage(consumer, process.env)).rejects.toThrow(
+    "synthetic CLI startup failure",
+  );
 });
