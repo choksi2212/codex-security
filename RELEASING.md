@@ -248,6 +248,20 @@ Check the published state before announcing the release:
 - Every merged pull request is included or has an intentional
   `skip-release-notes` label.
 
+The `published-install-smoke` workflow checks npm's current `latest` daily,
+on pull requests changing its smoke checks, and on manual dispatch. It installs
+into a temporary consumer, checks the npm CLI shim and public SDK, starts the
+bundled Codex executable with `--version`,
+and initializes the bundled MCP server. Linux covers supported Node majors
+22, 24, and 26; macOS and Windows cover Node 24. These checks use temporary
+configuration directories and do not run scans or call model APIs.
+
+The smoke test uses the installed version, so it can run while `main` contains
+unreleased changes. A failure reports the installed version or failing startup
+command in the Actions log; inspect that job before treating it as a release
+regression. To reproduce locally, run
+`node sdk/typescript/scripts/smoke-published-package.mjs` from the repository.
+
 ## Recover or repair a release
 
 Do not retarget a release tag or publish a second package under the same

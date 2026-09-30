@@ -13,17 +13,13 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import {
-  basename,
-  dirname,
-  isAbsolute,
-  join,
-  relative,
-  resolve,
-  sep,
-} from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { packageSmokeTimeouts } from "./package-smoke-timeouts.mjs";
+import {
+  resolveNpm,
+  runPackageCommand as run,
+} from "./package-smoke-process.mjs";
 
 const {
   commandTimeoutMs: PACKAGE_SMOKE_TIMEOUT_MS,
@@ -75,80 +71,6 @@ async function resolveArchive() {
   }
 
   return join(archiveDirectory, archives[0].name);
-}
-
-function run(
-  command,
-  args,
-  {
-    cwd,
-    env,
-    capture = false,
-    windowsVerbatimArguments = false,
-    timeout = PACKAGE_SMOKE_TIMEOUT_MS,
-  } = {},
-) {
-  const result = spawnSync(command, args, {
-    cwd,
-    env,
-    encoding: "utf8",
-    stdio: capture ? "pipe" : "inherit",
-    timeout,
-    killSignal: "SIGKILL",
-    windowsVerbatimArguments,
-    windowsHide: true,
-  });
-
-  if (result.error?.code === "ETIMEDOUT") {
-    throw new Error(
-      `Package smoke command timed out after ${timeout} ms: ${command}.`,
-      { cause: result.error },
-    );
-  }
-  if (result.error !== undefined) {
-    throw new Error(`Failed to run ${command}.`, { cause: result.error });
-  }
-  if (result.status !== 0) {
-    const details = capture ? `\n${result.stderr.trim()}` : "";
-    throw new Error(
-      `${command} exited with status ${result.status}.${details}`,
-    );
-  }
-
-  return result.stdout ?? "";
-}
-
-async function resolveNpm() {
-  const nodeDirectory = dirname(process.execPath);
-  const candidates = [
-    process.env.npm_execpath,
-    resolve(nodeDirectory, "../lib/node_modules/npm/bin/npm-cli.js"),
-    resolve(nodeDirectory, "node_modules/npm/bin/npm-cli.js"),
-    resolve(nodeDirectory, "../node_modules/npm/bin/npm-cli.js"),
-  ];
-
-  for (const candidate of new Set(candidates)) {
-    if (
-      typeof candidate !== "string" ||
-      basename(candidate).toLowerCase() !== "npm-cli.js"
-    ) {
-      continue;
-    }
-
-    try {
-      if ((await stat(candidate)).isFile()) {
-        return { command: process.execPath, args: [candidate] };
-      }
-    } catch (error) {
-      if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
-    }
-  }
-
-  if (process.platform === "win32") {
-    throw new Error("The Node.js installation does not include the npm CLI.");
-  }
-
-  return { command: "npm", args: [] };
 }
 
 async function pluginFiles(directory) {
