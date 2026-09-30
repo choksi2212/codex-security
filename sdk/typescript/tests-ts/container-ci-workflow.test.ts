@@ -65,6 +65,21 @@ test("shares one native build and container matrix in automatic CI", () => {
   }
 });
 
+test("keeps container validation available to forks and publication upstream-only", () => {
+  const container = workflow("container-ci");
+  const validation = workflow("container-validate");
+  const release = workflow("container-release");
+  expect(container.jobs["native"]).not.toHaveProperty("if");
+  expect(container.jobs["container"]).not.toHaveProperty("if");
+  expect(validation.jobs["validate"]).not.toHaveProperty("if");
+  for (const name of ["native", "validate", "authorize"]) {
+    expect(release.jobs[name]?.if).toBe(
+      "github.repository == 'openai/codex-security'",
+    );
+  }
+  expect(release.jobs["publish-platform"]?.needs).toBe("authorize");
+});
+
 test.each([
   ["push", false, "README.md", true],
   ["pull_request", true, "README.md", true],
