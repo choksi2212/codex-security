@@ -19,6 +19,7 @@
 - bump fast-uri from 3.1.7 to 3.1.8 in /plugins/codex-security/mcp-app ([#1109](https://github.com/openai/codex-security/pull/1109))
 - bump brace-expansion from 5.0.9 to 5.0.12 in /sdk/typescript ([#1107](https://github.com/openai/codex-security/pull/1107))
 - bump ip-address from 10.7.0 to 10.7.2 in /plugins/codex-security/mcp-app ([#1108](https://github.com/openai/codex-security/pull/1108))
+- reuse unchanged plugins across concurrent scans ([#1082](https://github.com/openai/codex-security/pull/1082))
 <!-- release-section: highlights:end -->
 
 <!-- release-section: upgrades:start -->
