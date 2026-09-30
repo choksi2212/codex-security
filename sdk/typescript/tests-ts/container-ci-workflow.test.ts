@@ -98,7 +98,7 @@ test.each([
     true,
   ],
 ] as const)(
-  "selects container validation for %s / retarget=%s / %s",
+  "selects container validation for %s / retarget=%p / %s",
   (eventName, baseChanged, path, selected) => {
     const directory = mkdtempSync(join(tmpdir(), "container-ci-scope-"));
     const output = join(directory, "outputs");
