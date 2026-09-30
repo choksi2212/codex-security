@@ -1153,7 +1153,9 @@ export class CodexSecurity {
         )(target.repository, signal),
         ...model,
         pluginVersion: runtime.plugin.version,
+        pythonPath: session.python,
         signal,
+        onWarning: warn,
         onStage: (stage) =>
           notifyObserver(
             "onStage",
@@ -2161,6 +2163,13 @@ export class CodexSecurity {
               "findings.json",
               "coverage.json",
               "report.md",
+              ...(result.threatModelPath === null
+                ? []
+                : [
+                    relative(scanDir, result.threatModelPath)
+                      .split(sep)
+                      .join("/"),
+                  ]),
               ...result.manifest.scan.artifacts.map(
                 (artifact) => artifact.path,
               ),
@@ -4000,6 +4009,7 @@ function scanPrompt(
     ...(skillName === "security-scan"
       ? [
           "This Standard scan authorizes its independent baseline auditor and focused investigators; use available subagent tools and continue with parent-agent fallback if capacity changes.",
+          "After architecture mapping yields a usable threatModel, call record_codex_security_scan_draft for this already registered scan with complete:false, findings:[], and truthful partial coverage, before continuing discovery. Preserve the model in later checkpoints as it changes. This checkpoint does not start or complete a scan; write final canonical files as instructed below.",
         ]
       : skillName === "deep-security-scan"
         ? []

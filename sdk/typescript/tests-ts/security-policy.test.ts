@@ -90,7 +90,7 @@ describe("security policy generation", () => {
           ).toContain("src/service.ts:1");
         if (stage === "policy")
           expect(
-            await readFile(join(f.outputDir, "THREAT_MODEL.md"), "utf8"),
+            await readFile(join(f.outputDir, "threatmodel.md"), "utf8"),
           ).toContain("src/service.ts:1");
         return stageResult(stage);
       },
@@ -194,9 +194,10 @@ describe("security policy generation", () => {
     ).rejects.toThrow("Git metadata changed");
     expect((await readdir(f.outputDir)).sort()).toEqual([
       "SECURITY.md",
-      "THREAT_MODEL.md",
+      "policy-draft.json",
       "previous-SECURITY.md",
       "project-spec.md",
+      "threatmodel.md",
     ]);
   });
 
@@ -811,6 +812,90 @@ describe("security policy generation", () => {
     expect(await readdir(f.outputDir)).not.toContain("policy-draft.json");
   });
 
+  test("retains the canonical model before a later policy failure", async () => {
+    const f = await fixture();
+    policyGit(f.repository, "init", "--quiet");
+    await expect(
+      f.generate({
+        run: async (stage) => {
+          if (stage === "policy") {
+            const checkpoint = JSON.parse(
+              await readFile(join(f.outputDir, "policy-draft.json"), "utf8"),
+            );
+            expect(checkpoint.status).toBe("threat_model_ready");
+            expect(checkpoint.threatModel).toEqual({
+              format: "markdown",
+              content: stageResult("threat_model").markdown,
+              scope: { includePaths: ["."], excludePaths: [] },
+              origin: "generated",
+            });
+            throw new Error("Synthetic policy failure");
+          }
+          return stageResult(stage);
+        },
+      }),
+    ).rejects.toThrow("Synthetic policy failure");
+    const checkpoint = JSON.parse(
+      await readFile(join(f.outputDir, "policy-draft.json"), "utf8"),
+    );
+    expect(checkpoint.threatModel.content).toBe(
+      stageResult("threat_model").markdown,
+    );
+    expect(
+      await readFile(join(f.outputDir, "threatmodel.md"), "utf8"),
+    ).toContain(stageResult("threat_model").markdown);
+  });
+
+  test("preserves a valid model returned by a blocked threat-model stage", async () => {
+    const f = await fixture();
+    policyGit(f.repository, "init", "--quiet");
+    await expect(
+      f.generate({
+        run: async (stage) => ({
+          ...stageResult(stage),
+          ...(stage === "threat_model"
+            ? { blockedReason: "Synthetic unavailable deployment evidence" }
+            : {}),
+        }),
+      }),
+    ).rejects.toThrow("Synthetic unavailable deployment evidence");
+    const saved = JSON.parse(
+      await readFile(join(f.outputDir, "policy-draft.json"), "utf8"),
+    );
+    expect(saved.status).toBe("blocked");
+    expect(saved.threatModel.content).toBe(
+      stageResult("threat_model").markdown,
+    );
+    expect(
+      await readFile(join(f.outputDir, "threatmodel.md"), "utf8"),
+    ).toContain(stageResult("threat_model").markdown);
+    expect(await readdir(f.outputDir)).not.toContain("SECURITY.md");
+  });
+
+  test("finishes a policy when its optional model document cannot be written", async () => {
+    const f = await fixture();
+    policyGit(f.repository, "init", "--quiet");
+    const draft = await f.generate({
+      run: async (stage, prompt) => {
+        if (stage === "threat_model")
+          await mkdir(join(f.outputDir, "threatmodel.md"));
+        if (stage === "policy") expect(prompt).toContain("policy-draft.json");
+        return stageResult(stage);
+      },
+    });
+    expect(draft.threatModelPath).toBeNull();
+    expect(draft.threatModel).toMatchObject({
+      format: "markdown",
+      content: stageResult("threat_model").markdown,
+    });
+    expect(draft.content).toBe(POLICY);
+    const saved = JSON.parse(
+      await readFile(join(f.outputDir, "policy-draft.json"), "utf8"),
+    );
+    expect(saved.status).toBe("completed");
+    expect(saved.threatModel).toEqual(draft.threatModel);
+  });
+
   test("retains completed evidence without saving invalid policy documents", async () => {
     for (const markdown of [
       "",
@@ -829,9 +914,10 @@ describe("security policy generation", () => {
       ).rejects.toThrow();
       expect(await readdir(f.repository)).toEqual([]);
       expect((await readdir(f.outputDir)).sort()).toEqual([
-        "THREAT_MODEL.md",
+        "policy-draft.json",
         "previous-SECURITY.md",
         "project-spec.md",
+        "threatmodel.md",
       ]);
     }
   });
@@ -887,7 +973,13 @@ describe("security policy generation", () => {
       }),
     });
     expect(await readFile(draft.specificationPath, "utf8")).toBe(document);
-    expect(await readFile(draft.threatModelPath, "utf8")).toBe(document);
+    expect(await readFile(draft.threatModelPath!, "utf8")).toStartWith(
+      document,
+    );
+    expect(draft.threatModel).toMatchObject({
+      format: "markdown",
+      content: document,
+    });
     expect(draft.content).toBe(POLICY);
   });
 });

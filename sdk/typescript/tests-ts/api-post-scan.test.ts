@@ -110,20 +110,23 @@ async function startFailedPostScan(scenario: FailedPostScanScenario) {
                 const manifest = JSON.parse(
                   await readFile(manifestPath, "utf8"),
                 );
-                manifest.scan.artifacts.push({
-                  path: scenario.artifact,
-                  sha256: createHash("sha256")
-                    .update(await readFile(artifactPath))
-                    .digest("hex"),
-                  mediaType: scenario.artifact.endsWith(".bin")
-                    ? "application/octet-stream"
-                    : "application/json",
-                });
+                if (scenario.artifact !== "threatmodel.md")
+                  manifest.scan.artifacts.push({
+                    path: scenario.artifact,
+                    sha256: createHash("sha256")
+                      .update(await readFile(artifactPath))
+                      .digest("hex"),
+                    mediaType: scenario.artifact.endsWith(".bin")
+                      ? "application/octet-stream"
+                      : "application/json",
+                  });
                 await writeFile(manifestPath, JSON.stringify(manifest));
               }
               original = await readFile(artifactPath);
               return { events: completedEvents() };
             }
+            if (scenario.artifact === "threatmodel.md")
+              original = await readFile(artifactPath);
             await scenario.mutate(context);
             return { events: failedEvents() };
           },
@@ -155,6 +158,15 @@ const ordinaryRestorationCases: ReadonlyArray<
   [
     "missing report",
     { artifact: "report.md", mutate: ({ artifactPath }) => rm(artifactPath) },
+  ],
+  [
+    "derived threat model",
+    {
+      artifact: "threatmodel.md",
+      initialContents: "# Saved model\n",
+      mutate: ({ artifactPath }) =>
+        writeFile(artifactPath, "# Incorrect replacement\n"),
+    },
   ],
   [
     "partial report",

@@ -358,7 +358,10 @@ def parse_args(description: str) -> argparse.Namespace:
 
     export_findings = subparsers.add_parser("export-findings")
     export_findings.add_argument("--scan-id", required=True)
-    export_findings.add_argument("--format", choices=EXPORT_FORMATS, required=True)
+    export_findings.add_argument(
+        "--artifact", choices=("findings", "threat-model"), default="findings"
+    )
+    export_findings.add_argument("--format", choices=(*EXPORT_FORMATS, "md"))
 
     for command in (
         "inspect-linear-publication",

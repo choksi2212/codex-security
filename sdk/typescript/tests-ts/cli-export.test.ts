@@ -105,6 +105,136 @@ describe("CLI", () => {
     expect(exportedScanDir).toBe(scanDir);
   });
 
+  test("exports a saved provisional model by scan prefix without starting Codex", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-security-export-model-"));
+    const stdout = capture();
+    const stderr = capture();
+    const calls: string[][] = [];
+    const deps = dependencies({
+      onWorkbench: (args) => {
+        calls.push([...args]);
+        return {
+          scan: {
+            scanId: "scan-provisional",
+            scanDir: root,
+            progress: { status: "running" },
+          },
+        };
+      },
+    });
+    deps.createSecurity = () => {
+      throw new Error("must not initialize Codex");
+    };
+    let selected: Record<string, unknown> | undefined;
+    deps.exportFindings = async (args) => {
+      selected = { ...args };
+      return Buffer.from("# Retained model\n");
+    };
+    try {
+      expect(
+        await main(
+          [
+            "export",
+            "--scan",
+            "scan-prov",
+            "--artifact",
+            "threat-model",
+            "--output",
+            "-",
+          ],
+          stdout.stream,
+          stderr.stream,
+          deps,
+        ),
+      ).toBe(0);
+      expect(selected).toMatchObject({
+        scanDir: root,
+        artifact: "threat-model",
+        format: "md",
+        output: "-",
+      });
+      expect(calls).toEqual([["get-scan", "--scan-id", "scan-prov"]]);
+      expect(stdout.text()).toBe("# Retained model\n");
+      expect(stderr.text()).toBe("");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("defaults model exports to threatmodel.md and findings to results.sarif", async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), "codex-security-export-default-"),
+    );
+    const deps = dependencies();
+    deps.currentDirectory = () => root;
+    const selected: Record<string, unknown>[] = [];
+    deps.exportFindings = async (args) => {
+      selected.push({ ...args });
+      return undefined;
+    };
+    try {
+      expect(
+        await main(
+          ["export", "saved", "--artifact", "threat-model"],
+          capture().stream,
+          capture().stream,
+          deps,
+        ),
+      ).toBe(0);
+      expect(
+        await main(
+          ["export", "saved"],
+          capture().stream,
+          capture().stream,
+          deps,
+        ),
+      ).toBe(0);
+      expect(selected).toMatchObject([
+        {
+          artifact: "threat-model",
+          format: "md",
+          output: join(root, "threatmodel.md"),
+        },
+        {
+          artifact: "findings",
+          format: "sarif",
+          output: join(root, "results.sarif"),
+        },
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects ambiguous sources, incompatible formats, and Markdown in JSON stdout", async () => {
+    for (const [args, expected] of [
+      [["saved", "--scan", "scan-id"], "--scan cannot be combined"],
+      [
+        ["saved", "--artifact", "threat-model", "--export-format", "json"],
+        "only support --export-format md",
+      ],
+      [
+        ["saved", "--artifact", "threat-model", "--export-format", "sarif"],
+        "only support --export-format md",
+      ],
+      [["saved", "--export-format", "md"], "Findings exports support"],
+      [
+        ["saved", "--artifact", "threat-model", "--output", "-", "--json"],
+        "Markdown stdout cannot",
+      ],
+    ] as const) {
+      const stderr = capture();
+      const deps = dependencies();
+      deps.exportFindings = async () => {
+        throw new Error("must not export invalid input");
+      };
+      expect(
+        await main(["export", ...args], capture().stream, stderr.stream, deps),
+      ).toBe(2);
+      expect(stderr.text()).toContain(expected);
+    }
+  });
+
   test("waits for delayed stdout writes without closing the destination", async () => {
     let contents = "";
     const stdout = new Writable({

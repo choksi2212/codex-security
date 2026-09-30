@@ -16,6 +16,7 @@ import {
   loadArtifactZodSchema,
   type SchemaDocument,
 } from "./artifact-schema-loader.js";
+import { saveThreatModelDocument } from "./threat-model-document.js";
 import {
   createDeepScanArtifacts,
   readJsonObject,
@@ -116,6 +117,7 @@ export async function recordCodexSecurityDeepReduction(
 ): Promise<{
   findingCount: number;
   consumedWorkerIds: string[];
+  warnings?: string[];
 }> {
   return withLogicalReducerErrors(context, async () => {
     const bound = bindDeepReducer(context);
@@ -143,9 +145,14 @@ export async function recordCodexSecurityDeepReduction(
 
     await saveScanDraftCheckpoint(context, reduction);
     await writeJsonAtomic(bound.resultPath, reduction);
+    const documentWarning = await saveThreatModelDocument(
+      context,
+      reduction.threatModel,
+    );
     return {
       findingCount: reduction.findings.length,
       consumedWorkerIds: bound.state.claimedWorkers.map((worker) => worker.id),
+      ...(documentWarning === undefined ? {} : { warnings: [documentWarning] }),
     };
   });
 }

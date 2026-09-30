@@ -2355,7 +2355,10 @@ describe("CLI", () => {
       await main(["export", "--help"], stdout.stream, stderr.stream, deps),
     ).toBe(0);
     expect(stdout.text()).toContain("Usage: codex-security export [scanDir]");
-    expect(stdout.text()).toContain("--export-format <csv|json|sarif>");
+    expect(stdout.text()).toContain("--artifact <findings|threat-model>");
+    expect(stdout.text()).toContain("--scan <string>");
+    expect(stdout.text()).toContain("--export-format <csv|json|sarif|md>");
+    expect(stdout.text()).toContain("threatmodel.md");
     expect(stdout.text()).toContain("--source-root <string>");
     expect(stdout.text()).not.toContain("--format {sarif}");
     expect(stderr.text()).toBe("");

@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
@@ -66,6 +66,7 @@ export interface ComponentReceipt {
   status: "pending" | "started" | "completed" | "incomplete" | "failed";
   outputDir: string;
   scanId?: string;
+  threatModelPath?: string;
   coverage?: CoverageCompleteness;
   findingCount?: number;
   cost?: Readonly<ScanCost>;
@@ -233,6 +234,9 @@ export async function runComponentScans(
             receipt.status = "failed";
             receipt.error = safeErrorMessage(error);
           }
+          const threatModelPath = join(receipt.outputDir, "threatmodel.md");
+          if ((await stat(threatModelPath).catch(() => null))?.isFile())
+            receipt.threatModelPath = threatModelPath;
           notify(() =>
             options.onProgress?.({ ...receipt, paths: [...receipt.paths] }),
           );
@@ -477,7 +481,7 @@ function renderReport(
     "",
     ...receipts.map(
       (receipt) =>
-        `- ${JSON.stringify(receipt.name)}: ${receipt.status}. [Scan files](./${receipt.id}/)${receipt.error ? ` — ${receipt.error}` : ""}`,
+        `- ${JSON.stringify(receipt.name)}: ${receipt.status}. [Scan files](./${receipt.id}/)${receipt.threatModelPath ? ` · [Threat model](./${receipt.id}/threatmodel.md)` : ""}${receipt.error ? ` — ${receipt.error}` : ""}`,
     ),
     "",
     "## Findings",

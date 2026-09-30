@@ -622,6 +622,7 @@ describe("compact diff scan", () => {
       };
       const markdownFact =
         "Selected input stays separate from private state (src/handler.py:1).";
+      const canonicalMarkdown = `# Canonical threat model\n\n## Assumptions\n\n${markdownFact}\n`;
       const savedModelPath = join(
         scanDir,
         "artifacts",
@@ -631,11 +632,11 @@ describe("compact diff scan", () => {
       mkdirSync(dirname(savedModelPath), { recursive: true, mode: 0o700 });
       writeFileSync(
         savedModelPath,
-        `# Saved threat model\n\n${markdownFact}\n`,
+        "# Saved threat model\n\nSuperseded supplemental model.\n",
       );
       const threatModel =
         format === "Markdown"
-          ? { summary: readFileSync(savedModelPath, "utf8") }
+          ? { format: "markdown" as const, content: canonicalMarkdown }
           : canonicalModel;
       const openQuestions = [
         {
@@ -805,6 +806,16 @@ describe("compact diff scan", () => {
           openQuestions,
         },
       });
+      const savedThreatModel = readFileSync(
+        join(scanDir, "threatmodel.md"),
+        "utf8",
+      );
+      expect(savedThreatModel).not.toContain("Superseded supplemental model.");
+      if (format === "Markdown")
+        expect(savedThreatModel.startsWith(canonicalMarkdown)).toBe(true);
+      else
+        for (const fact of Object.values(canonicalModel).flat())
+          expect(savedThreatModel).toContain(fact);
       const canonicalDraftIdentities = (
         JSON.parse(readFileSync(join(scanDir, "findings.json"), "utf8")) as {
           findings: JsonObject[];
@@ -883,6 +894,18 @@ describe("compact diff scan", () => {
       for (const fact of modelFacts) {
         expect(report).toContain(fact);
       }
+      expect(report).not.toContain("Superseded supplemental model.");
+      expect(report).not.toContain("# Saved threat model");
+      if (format === "Markdown") expect(report).toContain(canonicalMarkdown);
+      const completedThreatModel = readFileSync(
+        join(scanDir, "threatmodel.md"),
+        "utf8",
+      );
+      if (format === "Markdown")
+        expect(completedThreatModel.startsWith(canonicalMarkdown)).toBe(true);
+      else
+        for (const fact of modelFacts)
+          expect(completedThreatModel).toContain(fact);
       expect(report).toContain(openQuestions[0]!.question);
       expect(report).toContain(openQuestions[0]!.followUpPrompt);
       expect(report).toContain(coverageNote);
@@ -930,9 +953,10 @@ describe("compact diff scan", () => {
         "utf8",
       );
       expect(terminalReport).toContain(markdownFact);
-      expect(terminalReport.match(/^#{1,2} .+$/gm)).toEqual(
-        report.match(/^#{1,2} .+$/gm),
-      );
+      expect(terminalReport).toContain(markdownModel);
+      expect(
+        readFileSync(join(terminalDir, "threatmodel.md"), "utf8"),
+      ).toContain(markdownModel);
     } finally {
       await client.close();
     }

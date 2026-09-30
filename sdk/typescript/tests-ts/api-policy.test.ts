@@ -1325,7 +1325,17 @@ describe("CodexSecurity policy API", () => {
     expect(
       await readFile(join(f.outputDir, "previous-SECURITY.md"), "utf8"),
     ).toBe(original);
-    expect(await readdir(f.outputDir)).not.toContain("policy-draft.json");
+    expect(
+      JSON.parse(
+        await readFile(join(f.outputDir, "policy-draft.json"), "utf8"),
+      ),
+    ).toMatchObject({
+      status: "threat_model_ready",
+      threatModel: {
+        format: "markdown",
+        content: stageResult("threat_model").markdown,
+      },
+    });
     await f.security.close();
   });
 
@@ -1352,10 +1362,22 @@ describe("CodexSecurity policy API", () => {
       expect(f.threads).toHaveLength(3);
       expect((await readdir(f.outputDir)).sort()).toEqual([
         "SECURITY.md",
-        "THREAT_MODEL.md",
+        "policy-draft.json",
         "previous-SECURITY.md",
         "project-spec.md",
+        "threatmodel.md",
       ]);
+      expect(
+        JSON.parse(
+          await readFile(join(f.outputDir, "policy-draft.json"), "utf8"),
+        ),
+      ).toMatchObject({
+        status: "threat_model_ready",
+        threatModel: {
+          format: "markdown",
+          content: stageResult("threat_model").markdown,
+        },
+      });
       expect(await readFile(join(f.outputDir, "SECURITY.md"), "utf8")).toBe(
         POLICY,
       );

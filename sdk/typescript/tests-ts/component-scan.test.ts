@@ -298,6 +298,37 @@ function uncertain(
   };
 }
 
+test("links independently scoped saved models including a failed component", async () => {
+  const paths = await fixture();
+  execFileSync("git", ["-C", paths.repository, "init", "--quiet"]);
+  const summary = await scan(paths, {
+    components: components.slice(0, 2),
+    createSecurity: client(async (_repository, options) => {
+      await mkdir(options.outputDir!, { recursive: true });
+      await writeFile(
+        join(options.outputDir!, "threatmodel.md"),
+        `# Model\n\nScope: ${String(options.target)}\n`,
+      );
+      if (String(options.target).includes("web"))
+        throw new Error("Synthetic component failure");
+      return completed(options, []);
+    }),
+  });
+  const saved = await json(summary.summaryPath!);
+  const report = await readFile(summary.reportPath!, "utf8");
+  for (const [index, scope] of ["apps/api", "apps/web"].entries()) {
+    const expected = join(
+      paths.outputDir,
+      `component-${index + 1}`,
+      "threatmodel.md",
+    );
+    expect(saved.components[index].threatModelPath).toBe(expected);
+    expect(await readFile(expected, "utf8")).toContain(scope);
+    expect(report).toContain(`./component-${index + 1}/threatmodel.md`);
+  }
+  expect(summary).toMatchObject({ completed: 1, failed: 1 });
+});
+
 test("bounds standard scans, continues after failure, and preserves partial results", async () => {
   const paths = await fixture();
   let active = 0,

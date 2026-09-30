@@ -16,6 +16,7 @@ import {
   loadArtifactZodSchema,
   type SchemaDocument,
 } from "./artifact-schema-loader.js";
+import { saveThreatModelDocument } from "./threat-model-document.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -40,6 +41,7 @@ export interface ScanDraftResult {
   surfaceCount: number;
   operation: "replace";
   status: "draft_written";
+  warnings?: string[];
 }
 
 export interface CompletedScanResult {
@@ -59,7 +61,7 @@ type PublishScanDraft = (
   draft: PreparedScanDraft,
   expectedDigest: string | undefined,
   checkpoint: ScanDraftInput,
-) => Promise<void>;
+) => Promise<string[] | void>;
 
 const schemaDocuments = [commonSchema, scanDraftDocument] as SchemaDocument[];
 
@@ -134,8 +136,13 @@ export async function recordCodexSecurityScanDraft(
         coverage,
         manifest: { scan: manifestScan },
       };
+      let documentWarnings: string[] | void = undefined;
       if (publishDraft) {
-        await publishDraft(draft, preserved.previousDigest, parsed);
+        documentWarnings = await publishDraft(
+          draft,
+          preserved.previousDigest,
+          parsed,
+        );
       } else {
         const destinations = await Promise.all([
           artifactDestination(
@@ -157,6 +164,11 @@ export async function recordCodexSecurityScanDraft(
         await replaceArtifactJson(destinations[0], { findings });
         await replaceArtifactJson(destinations[1], coverage);
         await replaceArtifactJson(destinations[2], { scan: manifestScan });
+        const warning = await saveThreatModelDocument(
+          context,
+          reconciled.threatModel,
+        );
+        if (warning !== undefined) documentWarnings = [warning];
       }
       return {
         scanId: reconciled.scanId,
@@ -164,6 +176,7 @@ export async function recordCodexSecurityScanDraft(
         surfaceCount: (coverage.surfaces as unknown[]).length,
         operation: "replace",
         status: "draft_written",
+        ...(documentWarnings?.length ? { warnings: documentWarnings } : {}),
       };
     } catch (error) {
       if (!isScanDraftConflict(error)) throw error;
@@ -215,7 +228,12 @@ export async function recordCodexSecurityScanDraftViaWorkbench(
           arguments_.push("--claim-token", context.handoffClaimToken);
         }
         try {
-          await runWorkbench(arguments_);
+          const result = await runWorkbench(arguments_);
+          return Array.isArray(result?.warnings)
+            ? result.warnings.filter(
+                (warning): warning is string => typeof warning === "string",
+              )
+            : undefined;
         } catch (error) {
           if (!workbenchScanDraftConflict(error)) throw error;
           throw Object.assign(
@@ -273,6 +291,10 @@ export async function recordCodexSecurityWorkerScanDraft(
     "worker scan draft",
   );
   await replaceArtifactJson(destination, scoped);
+  const documentWarning = await saveThreatModelDocument(
+    context,
+    scoped.threatModel,
+  );
 
   return {
     scanId: parsed.scanId,
@@ -280,6 +302,7 @@ export async function recordCodexSecurityWorkerScanDraft(
     surfaceCount: (scoped.coverage.surfaces as unknown[]).length,
     operation: "replace",
     status: "draft_written",
+    ...(documentWarning === undefined ? {} : { warnings: [documentWarning] }),
   };
 }
 

@@ -25,6 +25,7 @@ from finalize_scan_contract import (
     _populate_unsealed_artifact_envelope,
     _populate_unsealed_manifest_envelope,
     _prepare_scan_finalization,
+    _read_saved_threat_model,
     _read_scan_local_json,
     _read_scan_local_json_bytes,
     _recover_unsealed_findings,
@@ -35,6 +36,7 @@ from finalize_scan_contract import (
     finding_candidate_id,
     open_scan_local_file_descriptor,
     write_scan_local_bytes,
+    write_threat_model_projection_if_possible,
 )
 from workbench_constants import PHASES
 from workbench_target import committed_diff_snapshot_digest
@@ -45,6 +47,7 @@ _PUBLISHED_OUTPUTS = (
     "coverage.json",
     "scan-manifest.json",
     "report.md",
+    "threatmodel.md",
     "report.html",
     "exports/results.sarif",
 )
@@ -54,6 +57,24 @@ _PUBLICATION_FOLLOW_UP_WARNING = (
 _RESERVED_ARTIFACT_PATHS = json.loads(
     Path(__file__).with_name("reserved_artifact_paths.json").read_text(encoding="utf-8")
 )
+
+
+def threat_model_fields(scan_dir: Path) -> dict[str, Any]:
+    fields: dict[str, Any] = {"threatModelAvailable": False}
+    try:
+        saved_model = _read_saved_threat_model(scan_dir, validate_seal=False)
+        if saved_model is not None:
+            description = saved_model[0]
+            fields.update(
+                threatModelAvailable=True,
+                threatModel=description["threatModel"],
+                threatModelProvenance=description["provenance"],
+            )
+            if description["path"] is not None:
+                fields["threatModelPath"] = description["path"]
+    except (ContractError, OSError):
+        pass
+    return fields
 
 
 @dataclass(frozen=True)
@@ -817,6 +838,8 @@ def merge_saved_results(
             continue
         if "threatModel" not in manifest["scan"] and isinstance(draft.get("threatModel"), dict):
             manifest["scan"]["threatModel"] = copy.deepcopy(draft["threatModel"])
+            if worker_id is not None:
+                manifest["scan"]["threatModel"]["origin"] = "recovered"
         for value in draft["findings"]:
             if relative == "parent" and parent_manifest:
                 finding = copy.deepcopy(value)
@@ -1076,6 +1099,9 @@ def _snapshot_published_outputs(scan_dir: Path) -> dict[str, bytes | None]:
         except ContractError:
             path = scan_dir / relative
             if path.exists() or path.is_symlink():
+                if relative == "threatmodel.md":
+                    # This optional projection will not replace an unsafe destination.
+                    continue
                 raise
             snapshots[relative] = None
         finally:
@@ -1452,9 +1478,17 @@ def write_scan_draft(db: Any, connection: Any, args: Any) -> dict[str, Any]:
                 filename,
                 (json.dumps(document, allow_nan=False, indent=2) + "\n").encode(),
             )
+        model_warning = write_threat_model_projection_if_possible(scan_dir, manifest)
         # Accepted Standard drafts are evidence of review or report assembly,
         # even when the parent omitted its explicit progress call.
-        if scan["mode"] == "standard":
+        model_only_checkpoint = (
+            manifest["scan"].get("complete") is False
+            and isinstance(manifest["scan"].get("threatModel"), dict)
+            and not findings.get("findings")
+            and not coverage.get("surfaces")
+            and not coverage.get("deferred")
+        )
+        if scan["mode"] == "standard" and not model_only_checkpoint:
             phase = "discovery" if manifest["scan"].get("complete") is False else "reporting"
             earlier = PHASES[: PHASES.index(phase)]
             placeholders = ",".join("?" for _ in earlier)
@@ -1475,7 +1509,11 @@ def write_scan_draft(db: Any, connection: Any, args: Any) -> dict[str, Any]:
                         )
             except sqlite3.Error as exc:
                 print(f"Could not save scan progress: {exc}", file=sys.stderr)
-    return {"scanId": scan_id, "status": "draft_written"}
+    return {
+        "scanId": scan_id,
+        "status": "draft_written",
+        **({"warnings": [model_warning]} if model_warning else {}),
+    }
 
 
 def _scan_draft_digest(scan_dir: Path) -> str:

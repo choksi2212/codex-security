@@ -2773,6 +2773,9 @@ def scan_result(
     )
     if sarif_path is not None:
         artifacts["sarifReport"] = str(sarif_path)
+    model_fields = saved_results.threat_model_fields(Path(scan["scan_dir"]))
+    if path := model_fields.get("threatModelPath"):
+        artifacts["threatModel"] = path
     occurrence_rows = scan_history.finding_occurrence_rows(
         connection, scan["id"], offset=0, limit=FINDINGS_RESULT_LIMIT
     )
@@ -2836,6 +2839,7 @@ def scan_result(
     )
     return {
         "artifacts": artifacts,
+        **model_fields,
         "canceledAt": scan["canceled_at"],
         **scan_usage.stored_scan_cost_fields(scan["cost_json"]),
         "contract": scan_contract(scan),

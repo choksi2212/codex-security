@@ -571,6 +571,78 @@ def test_incomplete_parent_checkpoint_cannot_complete_scan(tmp_path: Path) -> No
     )
 
 
+@pytest.mark.parametrize("termination", ["fail-scan", "cancel-scan"])
+def test_model_only_draft_is_available_before_findings_and_survives_stop(
+    tmp_path: Path, termination: str
+) -> None:
+    state_dir = tmp_path / "state"
+    target = tmp_path / "target"
+    target.mkdir()
+    saved = create_saved_workspace(state_dir, target)
+    started = start_delivered_scan(
+        state_dir,
+        "--workspace-id",
+        str(saved["id"]),
+        "--scan-root",
+        str(tmp_path / "scans"),
+    )["results"]
+    scan_id, scan_dir = str(started["scanId"]), Path(str(started["scanDir"]))
+    run_workbench(state_dir, "update-progress", "--scan-id", scan_id, "--phase", "threat_model")
+    write_completed_contract(scan_dir, scan_id, target)
+    documents = {
+        key: json.loads((scan_dir / filename).read_text())
+        for key, filename in (
+            ("manifest", "scan-manifest.json"),
+            ("findings", "findings.json"),
+            ("coverage", "coverage.json"),
+        )
+    }
+    model = {
+        "format": "markdown",
+        "content": "# Service Boundaries\n\nQueue producers and consumers.\n",
+        "scope": {"includePaths": ["."]},
+        "origin": "generated",
+    }
+    documents["manifest"]["scan"].update(threatModel=model, complete=False)
+    documents["findings"]["findings"] = []
+    documents["coverage"].update(completeness="partial", surfaces=[])
+    draft = scan_dir / "drafts" / f"{uuid.uuid4()}.json"
+    draft.parent.mkdir()
+    draft.write_text(json.dumps(documents))
+    run_workbench(state_dir, "write-scan-draft", "--scan-id", scan_id, "--draft-path", str(draft))
+    active = run_workbench(state_dir, "get-scan", "--scan-id", scan_id)["scan"]
+    assert active["progress"]["phase"] == "threat_model"
+    assert active["threatModelAvailable"] is True
+    assert active["threatModel"] == model
+    assert active["threatModelProvenance"]["provisional"] is True
+    assert active["artifacts"]["threatModel"] == str(scan_dir / "threatmodel.md")
+    assert (scan_dir / "threatmodel.md").read_text().startswith(model["content"])
+    documents["coverage"]["deferred"] = [
+        {"id": "pending-review", "reason": "A discovery review is pending."}
+    ]
+    draft.write_text(json.dumps(documents))
+    run_workbench(state_dir, "write-scan-draft", "--scan-id", scan_id, "--draft-path", str(draft))
+    reviewing = run_workbench(state_dir, "get-scan", "--scan-id", scan_id)["scan"]
+    assert reviewing["progress"]["phase"] == "discovery"
+    before = (scan_dir / "scan-manifest.json").read_bytes()
+    exported = run_workbench(
+        state_dir, "export-findings", "--scan-id", scan_id, "--artifact", "threat-model"
+    )
+    assert exported["export"] == {
+        "artifact": "threat-model",
+        "format": "md",
+        "path": str(scan_dir / "exports" / "threatmodel.md"),
+    }
+    assert (scan_dir / "scan-manifest.json").read_bytes() == before
+    extra = ("--message", "Stopped after saving the model.") if termination == "fail-scan" else ()
+    run_workbench(state_dir, termination, "--scan-id", scan_id, *extra)
+    stopped = run_workbench(state_dir, "get-scan", "--scan-id", scan_id)["scan"]
+    assert stopped["threatModel"] == model
+    assert stopped["threatModelProvenance"]["provisional"] is True
+    assert stopped["findingCount"] == 0
+    assert (scan_dir / "threatmodel.md").read_text().startswith(model["content"])
+
+
 def test_completed_findings_export_inside_scan_directory(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     target = tmp_path / "target"

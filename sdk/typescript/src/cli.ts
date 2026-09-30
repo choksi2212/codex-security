@@ -41,11 +41,20 @@ import {
 import { cwd } from "node:process";
 import { createInterface } from "node:readline";
 import { Readable, Writable as NodeWritable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify, stripVTControlCharacters } from "node:util";
 import { Cli, z } from "incur";
 import { scanLogsJson } from "./cli-scan-logs-json.js";
+import {
+  ARTIFACT_EXPORT_FILENAMES,
+  exportEnvironment,
+  resolveArtifactFormat,
+  resolveArtifactExportOutput,
+  runArtifactExport,
+  writeArtifactOutput as writeCliOutput,
+  type ArtifactExportArguments,
+} from "./artifact-export.js";
+export { exportEnvironment } from "./artifact-export.js";
 import { parse as parseToml } from "smol-toml";
 import {
   classifyConnectionFailure,
@@ -85,6 +94,7 @@ import {
 } from "./classify-scan-severity.js";
 import {
   resolveCompletedScan,
+  resolveSavedScan,
   resolveWorkflowScan,
   type SavedScan,
 } from "./saved-scan.js";
@@ -180,7 +190,6 @@ import {
   executablePathForSpawn,
   expandHome,
   prepareCodexSecurityCredentialHome,
-  pythonUtf8Environment,
   resolveCodexCommand,
   resolvePluginPython,
   runWorkbench,
@@ -318,11 +327,7 @@ const PROJECT_CONFIG_OPTION = optionValue("--config")
   .describe(
     "Load a trusted YAML/JSON file (default: CODEX_SECURITY_PROJECT_CONFIG, otherwise no file).",
   );
-const EXPORT_DEFAULT_OUTPUTS = {
-  csv: "findings.csv",
-  json: "findings.json",
-  sarif: "results.sarif",
-} as const;
+const EXPORT_DEFAULT_OUTPUTS = ARTIFACT_EXPORT_FILENAMES;
 const VALUE_OPTIONS = new Set([
   "--config",
   "-c",
@@ -371,6 +376,7 @@ const VALUE_OPTIONS = new Set([
   "--max-time-hours",
   "--max-attempts",
   "--export-format",
+  "--artifact",
   "--csv",
   "--output",
   "--source-root",
@@ -1017,13 +1023,7 @@ const scanOutputSchema = z
   ])
   .optional();
 
-interface ExportArguments {
-  scanDir: string;
-  format: keyof typeof EXPORT_DEFAULT_OUTPUTS;
-  output: string;
-  sourceRoot?: string;
-  pythonPath?: string;
-}
+type ExportArguments = ArtifactExportArguments;
 
 type MatchingPlan = JsonObject & {
   repository: string;
@@ -1285,70 +1285,7 @@ const DEFAULT_DEPENDENCIES: CliDependencies = {
     });
     return options?.trim === false ? stdout : stdout.trim();
   },
-  exportFindings: async (arguments_, output) => {
-    const environment = exportEnvironment();
-    const python = await resolvePluginPython({
-      configuredPath: arguments_.pythonPath,
-      environment,
-    });
-    const plugin = await bundledPluginRoot();
-    const invocation = spawn(
-      python,
-      [
-        "-I",
-        "-X",
-        "utf8",
-        join(plugin, "scripts", "finalize_scan_contract.py"),
-        "--scan-dir",
-        arguments_.scanDir,
-        "--export-format",
-        arguments_.format,
-        ...(arguments_.output === "-"
-          ? []
-          : ["--export-output", arguments_.output]),
-        ...(arguments_.sourceRoot === undefined
-          ? []
-          : ["--source-root", arguments_.sourceRoot]),
-      ],
-      {
-        env: environment,
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      },
-    );
-    let stderr = "";
-    invocation.stderr.on("data", (chunk: Buffer) => {
-      stderr = `${stderr}${chunk.toString("utf8")}`.slice(-64 * 1024);
-    });
-    const forwarded =
-      arguments_.output === "-" && output !== undefined
-        ? writeCliOutput(output, invocation.stdout)
-        : Promise.resolve(invocation.stdout.resume());
-    let status: number;
-    try {
-      [status] = await Promise.all([
-        new Promise<number>((resolve, reject) => {
-          invocation.once("error", reject);
-          invocation.once("close", (code, signal) =>
-            resolve(signal === null ? (code ?? 1) : 1),
-          );
-        }),
-        forwarded,
-      ]);
-    } catch (error) {
-      invocation.stdout.destroy();
-      invocation.kill();
-      throw error;
-    }
-    if (status !== 0) {
-      const detail = stderr.trim().split("\n").at(-1);
-      throw new CodexSecurityError(
-        detail?.replace(/^finalize_scan_contract\.py: error: /, "") ||
-          `Could not export Codex Security findings as ${arguments_.format.toUpperCase()}.`,
-      );
-    }
-    return undefined;
-  },
+  exportFindings: runArtifactExport,
   runWorkbench: async (args, input, signal) => {
     const environment = {
       ...exportEnvironment(),
@@ -1706,73 +1643,6 @@ export async function runCodexSkillCommand(
   } finally {
     await releaseCredentialHome?.();
   }
-}
-
-async function writeCliOutput(
-  output: Writable,
-  value: string | Uint8Array | AsyncIterable<Uint8Array>,
-): Promise<void> {
-  const destination = new NodeWritable({
-    write(chunk, _encoding, callback) {
-      try {
-        if (output instanceof NodeWritable) {
-          output.write(chunk, callback);
-        } else if (output.write(chunk)) {
-          callback();
-        } else {
-          callback(
-            new CodexSecurityError(
-              "The export stdout stream cannot report backpressure safely.",
-            ),
-          );
-        }
-      } catch (error) {
-        callback(error instanceof Error ? error : new Error(String(error)));
-      }
-    },
-  });
-  const forwardError = (error: Error): void => {
-    destination.destroy(error);
-  };
-  if (output instanceof NodeWritable) output.once("error", forwardError);
-  try {
-    await pipeline(
-      typeof value === "string" || value instanceof Uint8Array
-        ? [value]
-        : value,
-      destination,
-    );
-  } finally {
-    if (output instanceof NodeWritable) {
-      output.removeListener("error", forwardError);
-    }
-  }
-}
-
-export function exportEnvironment(
-  environment: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-  return pythonUtf8Environment(
-    Object.fromEntries(
-      [
-        "PATH",
-        "Path",
-        "PATHEXT",
-        "SystemRoot",
-        "SYSTEMROOT",
-        "WINDIR",
-        "TMP",
-        "TEMP",
-        "TMPDIR",
-        "PYTHON",
-        "LANG",
-        "LC_ALL",
-        "LC_CTYPE",
-      ]
-        .filter((key) => environment[key] !== undefined)
-        .map((key) => [key, environment[key]]),
-    ),
-  );
 }
 
 export async function main(
@@ -4763,25 +4633,36 @@ export async function main(
     })
     .command("export", {
       description:
-        "Export findings from a completed scan as CSV, JSON, or SARIF.",
+        "Export saved findings or a threat model without running an analysis.",
       destructive: true,
       mcp: false,
       args: z.object({
         scanDir: z
           .string()
           .optional()
-          .describe("Completed scan directory (default: latest completed)."),
+          .describe("Saved result directory (default: latest completed scan)."),
       }),
       options: z
         .object({
+          artifact: z
+            .enum(["findings", "threat-model"])
+            .default("findings")
+            .describe("Saved artifact to export (default: findings)."),
+          scan: optionValue("--scan")
+            .optional()
+            .describe(
+              "Saved scan ID or unique prefix; cannot be combined with a result directory.",
+            ),
           exportFormat: z
-            .enum(["csv", "json", "sarif"])
-            .default("sarif")
-            .describe("Artifact format to export from the completed scan."),
+            .enum(["csv", "json", "sarif", "md"])
+            .optional()
+            .describe(
+              "Findings: csv, json, or sarif (default); threat-model: md (default).",
+            ),
           output: optionValue("--output")
             .optional()
             .describe(
-              "FILE or '-' for stdout (default: results.sarif, findings.json, or findings.csv).",
+              "FILE or '-' for stdout (default: results.sarif, findings.json, findings.csv, or threatmodel.md).",
             ),
           sourceRoot: optionValue("--source-root")
             .optional()
@@ -4795,38 +4676,58 @@ export async function main(
         .refine(
           (options) =>
             options.sourceRoot === undefined ||
-            options.exportFormat === "sarif",
+            (options.artifact === "findings" &&
+              (options.exportFormat === undefined ||
+                options.exportFormat === "sarif")),
           {
             message:
               "--source-root is only supported with --export-format sarif",
           },
         ),
       async run({ args, options }) {
-        const currentDirectory = dependencies.currentDirectory();
-        const scanDir = args.scanDir ?? (await latestScans())?.[0]?.scanDir;
-        if (scanDir === undefined) return;
-        exitCode = await runExport(
-          {
-            scanDir: resolveCliPath(currentDirectory, scanDir),
-            format: options.exportFormat,
-            output:
-              options.output === "-"
-                ? "-"
-                : resolveCliPath(
-                    currentDirectory,
-                    options.output ??
-                      EXPORT_DEFAULT_OUTPUTS[options.exportFormat],
-                  ),
-            sourceRoot:
-              options.sourceRoot === undefined
-                ? undefined
-                : resolveCliPath(currentDirectory, options.sourceRoot),
-            pythonPath: options.python,
-          },
-          output,
-          errorOutput,
-          dependencies,
-        );
+        try {
+          const currentDirectory = dependencies.currentDirectory();
+          if (args.scanDir !== undefined && options.scan !== undefined) {
+            throw new CodexSecurityError(
+              "--scan cannot be combined with a result directory.",
+            );
+          }
+          const format = resolveArtifactFormat(
+            options.artifact,
+            options.exportFormat,
+          );
+          const scanDir =
+            args.scanDir ??
+            (options.scan === undefined
+              ? (await latestScans())?.[0]?.scanDir
+              : (await resolveSavedScan(options.scan, dependencies)).scanDir);
+          if (scanDir === undefined) return;
+          exitCode = await runExport(
+            {
+              scanDir: resolveCliPath(currentDirectory, scanDir),
+              artifact: options.artifact,
+              format,
+              output:
+                options.output === "-"
+                  ? "-"
+                  : resolveCliPath(
+                      currentDirectory,
+                      options.output ?? EXPORT_DEFAULT_OUTPUTS[format],
+                    ),
+              sourceRoot:
+                options.sourceRoot === undefined
+                  ? undefined
+                  : resolveCliPath(currentDirectory, options.sourceRoot),
+              pythonPath: options.python,
+            },
+            output,
+            errorOutput,
+            dependencies,
+          );
+        } catch (error) {
+          exitCode = 2;
+          errorOutput.write(`codex-security: ${errorMessage(error)}\n`);
+        }
       },
     })
     .command("validate", {
@@ -6333,6 +6234,24 @@ function validateCliArguments(
     )
   ) {
     return "CSV stdout cannot be combined with JSON output; write CSV to a file or omit --json.";
+  }
+  if (
+    command === "export" &&
+    structuredOutput &&
+    argv.some(
+      (value, index) =>
+        value === "--output=-" ||
+        (value === "--output" && argv[index + 1] === "-"),
+    ) &&
+    argv.some(
+      (value, index) =>
+        value === "--artifact=threat-model" ||
+        (value === "--artifact" && argv[index + 1] === "threat-model") ||
+        value === "--export-format=md" ||
+        (value === "--export-format" && argv[index + 1] === "md"),
+    )
+  ) {
+    return "Markdown stdout cannot be combined with JSON output; write Markdown to a file or omit --json.";
   }
   if (command === "scan" && !argv.includes("--schema")) {
     if (
@@ -7998,62 +7917,11 @@ async function runExport(
   dependencies: CliDependencies,
 ): Promise<number> {
   try {
-    const canonicalScan = await realpath(arguments_.scanDir).catch(
-      () => arguments_.scanDir,
+    const prepared = await resolveArtifactExportOutput(
+      arguments_,
+      dependencies.currentDirectory(),
     );
-    const scanRelativeOutput = relative(arguments_.scanDir, arguments_.output);
-    const scanLocalOutput = join(
-      "exports",
-      EXPORT_DEFAULT_OUTPUTS[arguments_.format],
-    );
-    if (
-      arguments_.output !== "-" &&
-      !isOutsidePath(scanRelativeOutput) &&
-      scanRelativeOutput !== scanLocalOutput
-    ) {
-      throw new CodexSecurityError(
-        "The export output path cannot overwrite a scan artifact.",
-      );
-    }
-    const outputPath =
-      arguments_.output === "-"
-        ? "-"
-        : !isOutsidePath(scanRelativeOutput)
-          ? join(canonicalScan, scanRelativeOutput)
-          : join(
-              await realpath(dirname(arguments_.output)).catch(
-                (error: NodeJS.ErrnoException) => {
-                  if (error.code === "ENOENT") {
-                    throw new CodexSecurityError(
-                      `Export output directory does not exist: ${dirname(arguments_.output)}. Create the directory and retry.`,
-                    );
-                  }
-                  throw error;
-                },
-              ),
-              basename(arguments_.output),
-            );
-    if (arguments_.output !== "-") {
-      const currentDirectory = dependencies.currentDirectory();
-      const outputFromCurrent = relative(currentDirectory, arguments_.output);
-      if (!isOutsidePath(outputFromCurrent)) {
-        const canonicalCurrent = await realpath(currentDirectory).catch(
-          () => currentDirectory,
-        );
-        if (
-          relative(resolve(canonicalCurrent, outputFromCurrent), outputPath) !==
-          ""
-        ) {
-          throw new CodexSecurityError(
-            "The export output path cannot traverse a repository symlink.",
-          );
-        }
-      }
-    }
-    const contents = await dependencies.exportFindings(
-      { ...arguments_, scanDir: canonicalScan, output: outputPath },
-      output,
-    );
+    const contents = await dependencies.exportFindings(prepared, output);
     if (arguments_.output === "-") {
       if (contents !== undefined) {
         await writeCliOutput(output, Buffer.from(contents));
@@ -9272,9 +9140,13 @@ function printScanSummary(
         : severities.has("medium")
           ? 33
           : 36;
+  const threatModelPath = result.threatModelPath;
   errorOutput.write(
-    `\n  ${paint("REPORT", "1;36")}    ${paint(errorMessage(result.reportPath), 4)}\n\n` +
-      `  ${paint("FINDINGS", 1)}  ${paint(`${findingCount}${findingSummary === "" ? "" : ` (${findingSummary})`}`, findingColor)}\n` +
+    `\n  ${paint("REPORT", "1;36")}    ${paint(errorMessage(result.reportPath), 4)}\n` +
+      (threatModelPath === null
+        ? ""
+        : `  ${paint("THREAT MODEL", "1;36")}  ${paint(errorMessage(threatModelPath), 4)}\n`) +
+      `\n  ${paint("FINDINGS", 1)}  ${paint(`${findingCount}${findingSummary === "" ? "" : ` (${findingSummary})`}`, findingColor)}\n` +
       `  ${paint("COVERAGE", 1)}  ${result.coverage.completeness}\n` +
       (deepScanStop === undefined
         ? ""

@@ -59,6 +59,15 @@ export async function resolveCompletedScan(
     }
     scanId = latest["scanId"];
   }
+  return resolveSavedScan(scanId, dependencies, true);
+}
+
+export async function resolveSavedScan(
+  requestedId: string,
+  dependencies: SavedScanDependencies,
+  requireComplete = false,
+): Promise<SavedScan> {
+  let scanId = requestedId;
   const context = await dependencies.runWorkbench([
     "get-scan",
     "--scan-id",
@@ -75,9 +84,10 @@ export async function resolveCompletedScan(
   scanId = scan["scanId"];
   const progress = scan["progress"];
   if (
-    progress === undefined ||
-    !isJsonObject(progress) ||
-    progress["status"] !== "complete"
+    requireComplete &&
+    (progress === undefined ||
+      !isJsonObject(progress) ||
+      progress["status"] !== "complete")
   ) {
     throw new CodexSecurityError(`Scan ${scanId} is not complete.`);
   }
@@ -92,7 +102,7 @@ export async function resolveCompletedScan(
       : await lstat(scanDir).catch(() => undefined);
   if (scanDir === undefined || metadata?.isDirectory() !== true) {
     throw new CodexSecurityError(
-      `Artifacts for scan ${scanId} are unavailable. Restore the completed scan artifacts or run a new scan.`,
+      `Artifacts for scan ${scanId} are unavailable. Restore the saved scan artifacts or run a new scan.`,
     );
   }
   return { ...scan, scanId, scanDir };

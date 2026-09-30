@@ -29,6 +29,11 @@ def test_stopped_deep_scan_ignores_late_worker_checkpoints_without_reducer(
     checkpoint = {
         "scanId": scan_id,
         "complete": False,
+        "threatModel": {
+            "summary": "Queue producers cross a service boundary.",
+            "scope": {"includePaths": ["app.py"]},
+            "origin": "generated",
+        },
         "findings": [finding],
         "coverage": {
             "completeness": "partial",
@@ -76,6 +81,15 @@ def test_stopped_deep_scan_ignores_late_worker_checkpoints_without_reducer(
 
     stopped = run_workbench(state_dir, "get-scan", "--scan-id", scan_id[:12])["scan"]
     assert stopped["progress"]["status"] == ("canceled" if termination == "canceled" else "failed")
+    assert stopped["threatModel"] == {
+        **checkpoint["threatModel"],
+        "origin": "recovered",
+    }
+    assert stopped["threatModelProvenance"]["provisional"] is True
+    model_document = (scan_dir / "threatmodel.md").read_text()
+    assert "Queue producers cross a service boundary." in model_document
+    assert "Model scope: app.py" in model_document
+    assert "Model origin: recovered" in model_document
     assert stopped["findingCount"] == 1
     coverage = json.loads((scan_dir / "coverage.json").read_text())
     assert coverage["completeness"] == "partial"

@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { lstatSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type {
   CoverageDocument,
@@ -6,6 +6,7 @@ import type {
   FindingsDocument,
   ScanManifest,
   SeverityLevel,
+  ThreatModel,
 } from "./models.js";
 import { estimateScanCost, type ScanCost } from "./cost.js";
 import { meetsSeverity, severityThresholdRank } from "./scan-settings.js";
@@ -88,6 +89,29 @@ export class ScanResult {
     }
   }
 
+  public get threatModel(): ThreatModel | null {
+    return this.manifest.scan.threatModel ?? null;
+  }
+
+  public get threatModelPath(): string | null {
+    for (const name of [
+      "threatmodel.md",
+      ...(this.threatModel === null
+        ? [
+            "THREAT_MODEL.md",
+            "artifacts/01_context/threat_model.md",
+            "threat_model.md",
+          ]
+        : []),
+    ]) {
+      const path = join(this.scanDir, name);
+      try {
+        if (lstatSync(path, { throwIfNoEntry: false })?.isFile()) return path;
+      } catch {}
+    }
+    return null;
+  }
+
   public get reportPath(): string {
     return join(this.scanDir, "report.md");
   }
@@ -128,6 +152,8 @@ export class ScanResult {
       scanDir: this.scanDir,
       threadId: this.threadId,
       reportPath: this.reportPath,
+      threatModel: this.threatModel,
+      threatModelPath: this.threatModelPath,
       artifactsDir: this.artifactsDir,
       sarifPath: this.sarifPath,
       cost: this.cost,

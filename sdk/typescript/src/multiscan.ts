@@ -11,6 +11,7 @@ import {
   rename,
   rm,
   rmdir,
+  stat,
   truncate,
   utimes,
   writeFile,
@@ -65,6 +66,7 @@ interface MultiscanReceipt extends MultiscanTask {
   status: "completed" | "completed_with_incomplete_coverage" | "failed";
   attempt: number;
   outputDir: string;
+  threatModelPath?: string;
   coverage?: CoverageDocument["completeness"];
   cost?: ScanCost;
   error?: string;
@@ -470,6 +472,9 @@ async function runCampaign(
             : warning === undefined
               ? "completed"
               : "completed_with_incomplete_coverage";
+        const threatModelPath = join(scanDir, "threatmodel.md");
+        const hasThreatModel =
+          (await stat(threatModelPath).catch(() => null))?.isFile() === true;
         await appendReceipt(
           ledger,
           `${JSON.stringify({
@@ -477,6 +482,7 @@ async function runCampaign(
             status,
             attempt,
             outputDir: scanDir,
+            ...(hasThreatModel ? { threatModelPath } : {}),
             ...(coverage === undefined ? {} : { coverage }),
             ...(cost === null ? {} : { cost }),
             ...(failure === undefined ? {} : { error: failure }),
