@@ -60,9 +60,11 @@ tests the package, and publishes a verified artifact with npm provenance.
 GitHub Actions dependencies are maintained separately in this repository.
 
 Workflow and composite-action changes run `workflow-quality` through the existing
-required Unix CI checks. It runs actionlint with ShellCheck warnings and errors,
-then zizmor's offline checks at medium severity and above. The pinned tool versions
-are in `.github/workflows/workflow-quality.yml`; run these checks locally with:
+required Unix CI checks. actionlint validates workflow syntax, and ShellCheck
+checks shell scripts in workflow `run` steps for warnings and errors. zizmor's
+offline checks at medium severity and above cover workflows and composite
+actions. The pinned tool versions are in `.github/workflows/workflow-quality.yml`;
+run these checks locally with:
 
 ```bash
 SHELLCHECK_OPTS=--severity=warning actionlint
