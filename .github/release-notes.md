@@ -11,6 +11,7 @@
 - upgrade OpenCode SDK to 1.18.32 ([#1090](https://github.com/openai/codex-security/pull/1090))
 - fall back on Python AST recursion errors ([#1094](https://github.com/openai/codex-security/pull/1094))
 - probe the Codex sandbox before starting a billed scan ([#1084](https://github.com/openai/codex-security/pull/1084))
+- preserve source excerpt line numbering ([#1098](https://github.com/openai/codex-security/pull/1098))
 <!-- release-section: highlights:end -->
 
 <!-- release-section: upgrades:start -->
