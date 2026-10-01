@@ -29,6 +29,14 @@ assert.doesNotMatch(rendered, /false_positive_feedback\.json/);
 assert.match(rendered, /preserve literal \{\{DISCOVERY_CONTEXT_JSON\}\} text/);
 assert.match(rendered, /record_codex_security_scan_draft/);
 assert.match(rendered, /coverage\.deferred/);
+// The draft tool schema rejects persisted-artifact fields; the worker
+// prompt must say so before the first record_codex_security_scan_draft call.
+assert.match(rendered, /omit `scope\.includePaths`, `scope\.excludePaths`/);
+assert.match(rendered, /`coverage\.inventoryStrategy`/);
+assert.match(
+  rendered,
+  /the host derives them from the authoritative target contract/,
+);
 const discoveryContext = firstJsonBlock(rendered);
 assert.deepEqual(discoveryContext, {
   scanId: "a0d89285-66b7-4e4f-b51a-e21b93b7081b",
