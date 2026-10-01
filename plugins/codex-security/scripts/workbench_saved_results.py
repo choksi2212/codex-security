@@ -200,7 +200,7 @@ def _saved_results_changed(db: Any, scan: Any) -> bool:
     try:
         scan_dir = db.require_canonical_scan_directory(Path(scan["scan_dir"]))
         manifest_path = db.artifact_path(scan_dir, db.ARTIFACTS["manifest"], required=False)
-        paths = list(_saved_result_paths(scan_dir))
+        paths = _saved_result_paths(scan_dir)
         frozen_sources = scan["retained_source_digests_json"]
 
         def has_saved_source() -> bool:
@@ -3099,3 +3099,14 @@ def _pending_result_paths(scan_dir: Path) -> list[str]:
         for name in _children(scan_dir, "checkpoints/pending")
         if re.fullmatch(r"[0-9a-f]{64}\.json", name) and name not in acknowledged
     ]
+
+
+def union_coverage(target: dict[str, Any], source: dict[str, Any]) -> None:
+    for field in ("surfaces", "explicitExclusions", "deferred", "openQuestions"):
+        rows = target.setdefault(field, [])
+        seen = {_encoded(row) for row in rows}
+        for row in source.get(field, []):
+            key = _encoded(row)
+            if key not in seen:
+                seen.add(key)
+                rows.append(copy.deepcopy(row))

@@ -250,6 +250,155 @@ def test_deep_completion_keeps_strict_validation_for_committed_findings(tmp_path
 
 
 @pytest.mark.parametrize(
+    ("resolution_source", "mode", "reopened"),
+    [
+        ("committed", "deep", False),
+        ("canonical", "standard", False),
+        ("canonical", "standard", True),
+        ("interrupted_export", "standard", True),
+    ],
+)
+def test_cancellation_reconciles_current_surface_resolution_and_late_checkpoint_evidence(
+    tmp_path, workbench_api, monkeypatch, resolution_source, mode, reopened
+):
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "app.py").write_text("pass\n" * 50)
+    state = tmp_path / "state"
+    scan = register(state, target, tmp_path / "scan", mode=mode)
+    directory = Path(scan["scanDir"])
+    write_completed_contract(
+        directory,
+        scan["scanId"],
+        target,
+        relative_path="app.py",
+        coverage_mode="deep_repository" if mode == "deep" else "repository",
+    )
+    documents = {
+        key: json.loads((directory / name).read_text())
+        for key, name in (
+            ("manifest", "scan-manifest.json"),
+            ("findings", "findings.json"),
+            ("coverage", "coverage.json"),
+        )
+    }
+    late_findings = documents["findings"]["findings"]
+    documents["findings"]["findings"] = []
+    documents["manifest"]["scan"]["complete"] = False
+    coverage = documents["coverage"]
+    coverage["completeness"] = "partial"
+    coverage["surfaces"] = [
+        {
+            "id": "reviewed-surface",
+            "label": "Reviewed surface",
+            "disposition": "needs_follow_up",
+            "receiptRefs": [],
+        }
+    ]
+    coverage["deferred"] = [
+        {"id": "resolved-work", "reason": "Review surface", "surfaceIds": ["reviewed-surface"]}
+    ]
+    pending = coverage["deferred"]
+    monkeypatch.setenv("CODEX_SECURITY_STATE_DIR", str(state))
+    saved = workbench_api["saved_results"]
+    args = argparse.Namespace(
+        scan_id=scan["scanId"],
+        claim_token=None,
+        draft_path=None,
+        checkpoint_path=None,
+        expected_draft_digest=None,
+    )
+    with workbench_api["connect"]() as connection:
+
+        def publish():
+            payload = {
+                "documents": documents,
+                "checkpoint": {
+                    "scanId": scan["scanId"],
+                    "complete": False,
+                    "findings": [],
+                    "coverage": coverage,
+                },
+            }
+            monkeypatch.setattr(saved.sys, "stdin", io.StringIO(json.dumps(payload)))
+            saved.write_scan_draft(workbench_api["_WORKBENCH_DB_CONTEXT"], connection, args)
+
+        if reopened:
+            coverage["surfaces"][0]["disposition"] = "no_issue_found"
+            coverage["deferred"] = []
+        publish()
+        coverage["surfaces"][0]["disposition"] = "needs_follow_up" if reopened else "no_issue_found"
+        coverage["deferred"] = pending if reopened else []
+        if reopened:
+            coverage["surfaces"][0]["notes"] = "Review reopened after another observation."
+        if resolution_source == "interrupted_export":
+            write = saved.write_scan_local_bytes
+
+            def fail_export(root, relative, contents, **kwargs):
+                if relative == "coverage.json":
+                    raise OSError("Synthetic export interruption")
+                return write(root, relative, contents, **kwargs)
+
+            with monkeypatch.context() as patch:
+                patch.setattr(saved, "write_scan_local_bytes", fail_export)
+                with pytest.raises(OSError, match="export interruption"):
+                    publish()
+            manifest = json.loads((directory / "scan-manifest.json").read_text())
+            assert manifest["scan"]["completedAt"] != documents["manifest"]["scan"]["completedAt"]
+        elif resolution_source == "canonical":
+            (directory / "coverage.json").write_text(json.dumps(coverage))
+        else:
+            publish()
+    committed = (directory / "artifacts/scan-draft.json").read_bytes()
+    late_coverage = {
+        **coverage,
+        "surfaces": [
+            {
+                "id": "pending-surface",
+                "label": "Unrelated pending surface",
+                "disposition": "needs_follow_up",
+                "receiptRefs": [],
+            }
+        ],
+        "deferred": [
+            {"id": "pending-work", "reason": "Unrelated review", "surfaceIds": ["pending-surface"]},
+            {
+                "id": "new-candidate",
+                "reason": "New evidence on the reviewed surface",
+                "surfaceIds": ["reviewed-surface"],
+                "candidate": {"summary": "Later candidate evidence"},
+            },
+        ],
+    }
+    late_checkpoint = write_checkpoint(
+        directory / "checkpoints",
+        {
+            "scanId": scan["scanId"],
+            "complete": False,
+            "findings": late_findings,
+            "coverage": late_coverage,
+        },
+    )
+    late_bytes = late_checkpoint.read_bytes()
+    run_workbench(state, "cancel-scan", "--scan-id", scan["scanId"])
+    published = json.loads((directory / "coverage.json").read_text())
+    assert published["surfaces"] == coverage["surfaces"] + late_coverage["surfaces"]
+    expected_deferred = {"pending-work", "new-candidate", "scan-stopped"}
+    if reopened:
+        expected_deferred.add("resolved-work")
+        assert "Review reopened after another observation." in (directory / "report.md").read_text()
+    assert {row["id"] for row in published["deferred"]} == expected_deferred
+    assert late_coverage["deferred"][1] in published["deferred"]
+    findings = json.loads((directory / "findings.json").read_text())["findings"]
+    assert [finding["title"] for finding in findings] == [late_findings[0]["title"]]
+    assert findings[0]["codeEvidence"] == late_findings[0]["codeEvidence"]
+    assert (directory / "artifacts/scan-draft.json").read_bytes() == committed
+    assert late_checkpoint.read_bytes() == late_bytes
+    manifest = json.loads((directory / "scan-manifest.json").read_text())["scan"]
+    assert f"checkpoints/{late_checkpoint.name}" in manifest["preservedSources"]
+
+
+@pytest.mark.parametrize(
     ("command", "resolution", "complete"),
     [
         ("fail-scan", "reported", False),
@@ -481,3 +630,45 @@ def test_stopped_scan_retains_canonical_results_written_after_committed_draft(
     assert "New deferred review." in report
     assert "Which control governs the new surface?" in report
     assert ("Candidate needs validation." in report) is unresolved
+
+
+@pytest.mark.parametrize("distinct_instances", [False, True])
+def test_checkpoint_recovery_retains_refinement_and_distinct_instances(
+    tmp_path, distinct_instances
+):
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "app.py").write_text("pass\n" * 50)
+    state = tmp_path / "state"
+    scan = register(state, target, tmp_path / "scan")
+    directory = Path(scan["scanDir"])
+    write_completed_contract(directory, scan["scanId"], target, relative_path="app.py")
+    findings = json.loads((directory / "findings.json").read_text())["findings"]
+    original = json.loads(json.dumps(findings[0]))
+    if distinct_instances:
+        findings[0]["identity"]["instance"] = "first"
+        original["identity"]["instance"] = "second"
+        findings.append(original)
+    else:
+        findings[0]["locations"][0]["startLine"] = 24
+        findings[0]["provenance"]["previousFindings"] = [original]
+    write_checkpoint(
+        directory / "checkpoints",
+        {
+            "scanId": scan["scanId"],
+            "complete": False,
+            "findings": findings,
+            "coverage": json.loads((directory / "coverage.json").read_text()),
+        },
+    )
+    for name in ("scan-manifest.json", "findings.json", "coverage.json"):
+        (directory / name).unlink()
+    saved = run_workbench(
+        state, "fail-scan", "--scan-id", scan["scanId"], "--message", "Synthetic stop"
+    )["scan"]
+    actual = json.loads((directory / "findings.json").read_text())["findings"]
+    assert saved["findingCount"] == len(actual) == (2 if distinct_instances else 1)
+    if distinct_instances:
+        assert {finding["identity"]["instance"] for finding in actual} == {"first", "second"}
+    else:
+        assert actual[0]["provenance"]["previousFindings"] == [original]
