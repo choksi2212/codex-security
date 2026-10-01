@@ -3323,7 +3323,6 @@ _WORKBENCH_PUBLICATION_CONTEXT = publication.WorkbenchPublicationContext(
 
 
 _WORKBENCH_DB_CONTEXT = saved_results.WorkbenchDbContext(
-    deep_scan=deep_scan,
     ARTIFACTS=ARTIFACTS,
     artifact_path=artifact_path,
     expected_coverage_mode=expected_coverage_mode,
@@ -3341,7 +3340,6 @@ _WORKBENCH_DB_CONTEXT = saved_results.WorkbenchDbContext(
     require_workspace=require_workspace,
     scan_completion_lock=scan_completion_lock,
     scan_context=scan_context,
-    scan_contract=scan_contract,
     sealed_scan_producer_version=sealed_scan_producer_version,
     verify_manifest_binding=verify_manifest_binding,
     workbench_completion_binding=workbench_completion_binding,
