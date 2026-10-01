@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import fixtureTemplate from "../../../plugins/codex-security/tests/fixtures/scan-projection/canonical-child.json";
 import type { Finding } from "../src/models.js";
+import { readScanFile } from "../src/contract.js";
 import {
   prepareScanArtifactRestorer,
   runCodexCommand,
@@ -153,7 +154,7 @@ test("completed projection follows the shared canonical child fixture", async ()
   expect(
     JSON.parse(await readFile(join(h.source, "findings.json"), "utf8")),
   ).toEqual(h.original);
-  // Supporting evidence is read again on the next projection; there is no cross-call cache.
+  // Parent references continue to point at the child evidence; projection makes no copy.
   const evidence = Object.entries(fixture.expected.fileProjections).find(
     ([, path]) => path.endsWith("trace.txt"),
   )!;
@@ -275,7 +276,7 @@ test.each(["source ID", "seal", "parent directory"])(
 );
 
 test.skipIf(process.platform === "win32")(
-  "rejects unsafe evidence without copying outside bytes",
+  "retained evidence references cannot read through a child symlink",
   async () => {
     const h = await canonicalChild();
     const { fixture } = h;
@@ -283,9 +284,18 @@ test.skipIf(process.platform === "win32")(
     await writeFile(outside, "Synthetic outside evidence");
     await symlink(outside, join(h.source, "findings/check/unsafe.txt"));
     const writer = await prepareScanArtifactRestorer(h.options, h.parent);
+    await writer.projectChild(
+      fixture.parentScanId,
+      fixture.sourceScanId,
+      h.source,
+    );
     await expect(
-      writer.projectChild(fixture.parentScanId, fixture.sourceScanId, h.source),
-    ).rejects.toThrow("inside the scan directory");
+      readScanFile(
+        h.parent,
+        `${fixture.relativeDirectory}/findings/check/unsafe.txt`,
+        "supporting evidence",
+      ),
+    ).rejects.toThrow();
     expect(
       existsSync(
         join(h.parent, `findings/${fixture.sourceScanId}/check/unsafe.txt`),
@@ -324,7 +334,7 @@ os.execv(${JSON.stringify(python)}, [${JSON.stringify(python)}, *sys.argv[1:]])
 }
 
 test.skipIf(process.platform === "win32")(
-  "projects many evidence files with one selected Python process",
+  "references many evidence files with one selected Python process",
   async () => {
     const h = await canonicalChild();
     const { fixture } = h;
@@ -359,7 +369,12 @@ test.skipIf(process.platform === "win32")(
     for (const { name, bytes } of files) {
       expect(
         await readFile(
-          join(h.parent, `findings/${fixture.sourceScanId}/check/many`, name),
+          join(
+            h.parent,
+            fixture.relativeDirectory,
+            "findings/check/many",
+            name,
+          ),
         ),
       ).toEqual(bytes);
     }
@@ -404,29 +419,3 @@ test.skipIf(process.platform === "win32")(
     }
   },
 );
-
-test("preserves report and evidence basenames under the child namespace", async () => {
-  const h = await canonicalChild();
-  const { fixture } = h;
-  const evidence = `${fixture.sourceScanId}-check-3.md`;
-  await writeFile(
-    join(h.source, "findings/check-3", evidence),
-    "Supporting evidence",
-  );
-  const writer = await prepareScanArtifactRestorer(h.options, h.parent);
-  const projected = await writer.projectChild(
-    fixture.parentScanId,
-    fixture.sourceScanId,
-    h.source,
-  );
-  const directory = `findings/${fixture.sourceScanId}/check-3`;
-  expect(
-    projected.draft.findings.some(
-      (finding) => finding.writeup?.reportPath === `${directory}/check-3.md`,
-    ),
-  ).toBe(true);
-  for (const name of ["check-3.md", evidence])
-    expect(await readFile(join(h.parent, directory, name))).toEqual(
-      await readFile(join(h.source, "findings/check-3", name)),
-    );
-});

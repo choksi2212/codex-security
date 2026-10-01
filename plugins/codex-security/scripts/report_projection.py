@@ -20,7 +20,7 @@ DISPOSITION_LABELS = {
     "needs_follow_up": "Needs follow-up",
 }
 WRITEUP_REPORT_PATH_RE = re.compile(
-    r"^findings/(?:[a-z0-9][a-z0-9._-]*/)+[a-z0-9][a-z0-9._-]*\.md$"
+    r"^(?:artifacts/deep-scan/passes/[a-zA-Z0-9][a-zA-Z0-9._-]*/)?findings/(?:[a-z0-9][a-z0-9._-]*/)+[a-z0-9][a-z0-9._-]*\.md$"
 )
 
 
