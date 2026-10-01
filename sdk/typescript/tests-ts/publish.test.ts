@@ -690,6 +690,16 @@ describe("direct Linear API publication", () => {
       "Synthetic statusless response was unavailable after mutation.",
     ],
     [
+      "includes an API key in its transport failure",
+      () => {
+        const error = new NetworkLinearError();
+        error.message = "Linear request failed for lin_api_SYNTHETIC_SECRET";
+        return error;
+      },
+      undefined,
+      "[redacted]",
+    ],
+    [
       "receives an internal server response",
       () => {
         const error = new InternalLinearError();
@@ -735,6 +745,7 @@ describe("direct Linear API publication", () => {
           },
         },
       );
+      injected.environment!["CODEX_SECURITY_REDACT_LOGS"] = "0";
 
       await expect(
         publishScanInternal(

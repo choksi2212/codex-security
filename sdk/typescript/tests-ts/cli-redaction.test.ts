@@ -284,6 +284,12 @@ describe("CLI log redaction", () => {
         "request timed out token=SYNTHETIC_TIMEOUT_VALUE",
       ),
     },
+    {
+      name: "Linear",
+      failure: new CodexSecurityError(
+        "Linear request failed for lin_api_SYNTHETIC_SECRET",
+      ),
+    },
   ])("applies redaction to $name scan failures", async ({ failure }) => {
     for (const value of [undefined, "0", "1"]) {
       const stdout = capture();
