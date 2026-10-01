@@ -93,6 +93,7 @@ import {
   hasCommandAuth,
   mergedCodexConfig,
   resolveCodexProfile,
+  removeManagedPluginRegistration,
   resolveCommandAuthConfig,
   scanApprovalPolicy,
   scanModelConfiguration,
@@ -1191,7 +1192,32 @@ export class CodexSecurity {
     const prepareArtifactRestorer =
       this.#dependencies.prepareScanArtifactRestorer ??
       prepareScanArtifactRestorer;
-    const workbench = this.#dependencies.runWorkbench ?? runWorkbench;
+    const executeWorkbench = this.#dependencies.runWorkbench ?? runWorkbench;
+    const workbench: typeof runWorkbench = (commandOptions, args, input) => {
+      const claim = options.registeredScan?.handoffClaimToken;
+      const claimedCommands = new Set([
+        "get-cli-scan-resume",
+        "set-scan-thread",
+        "save-scan-artifact",
+        "write-scan-draft",
+        "prepare-scan-completion",
+        "complete-scan",
+        "fail-scan",
+        "preserve-scan-results",
+        "update-progress",
+        "complete-budget-exhausted-scan",
+      ]);
+      return executeWorkbench(
+        commandOptions,
+        claim &&
+          args[args.indexOf("--scan-id") + 1] ===
+            options.registeredScan?.scanId &&
+          claimedCommands.has(args[0] ?? "")
+          ? [...args, "--claim-token", claim]
+          : args,
+        input,
+      );
+    };
     try {
       const checkOpen = (): void => {
         this.#requireOpen();
@@ -1256,7 +1282,6 @@ export class CodexSecurity {
         runtime,
         runtimeHome,
         effectiveConfig,
-        preflightConfig,
         authentication,
         approvalPolicy,
         python,
@@ -1451,26 +1476,14 @@ export class CodexSecurity {
         onError: reportTrackingError,
       });
       costTracker = tracker;
-      const recipe = scanRecipe({
-        repository: repo,
-        target: normalized,
-        mode,
-        repositoryRevision: expectation.repositoryRevision,
-        pluginVersion: runtime.plugin.version,
-        config: { ...preflightConfig, approval_policy: approvalPolicy },
-        failOnSeverity: options.failureSeverity,
+      const recipe = prepareSavedScanRecipe({
+        expectation,
+        session,
+        options,
         knowledgeBasePaths: knowledgeBase?.sources,
-        maxCostUsd: options.maxCostUsd,
+        knowledgeBaseSha256: knowledgeBase?.sha256,
         deepScan: deepScanConfiguration?.settings,
-        auth: options.auth,
       });
-      if (options.scanPrompt?.trim()) recipe["requiresScanPrompt"] = true;
-      if (options.safetyIdentifier !== undefined)
-        recipe["safetyIdentifier"] = options.safetyIdentifier;
-      if (options.postScanPrompt !== undefined)
-        recipe["postScanPrompt"] = options.postScanPrompt;
-      if (options.validationPrompt !== undefined)
-        recipe["validationMode"] = "custom";
       const {
         registration,
         scanId,
@@ -1575,7 +1588,7 @@ export class CodexSecurity {
         progressReporter.scopeFileCount === null
           ? basePrompt
           : `${basePrompt}\nThe SDK's current in-scope file-count estimate is ${progressReporter.scopeFileCount}; use it for scan progress unless exact scoped-source enumeration establishes a different total before review begins.`;
-      if (options.resumeScanId !== undefined) {
+      if (options.resumeScanId !== undefined && mode === "deep") {
         prompt +=
           "\nResume the existing Deep Scan through its coordinator. Preserve completed workers and saved artifacts; do not recreate the scan directory or restart completed analysis. If the coordinator already finished, continue with completion of this same scan.";
       }
@@ -1755,7 +1768,7 @@ export class CodexSecurity {
         workbenchValidated: true,
         model,
         onThreadStarted: async (threadId) => {
-          if (resumeThreadId !== undefined) {
+          if (typeof resumeThreadId === "string") {
             if (threadId !== resumeThreadId) {
               throw new CodexSecurityError(
                 "Codex did not resume the original scan session.",
@@ -3008,7 +3021,7 @@ export class CodexSecurity {
   ): Promise<LocalScanInputs> {
     if (
       options.resumeScanId !== undefined &&
-      (options.mode !== "deep" ||
+      ((options.mode !== "deep" && !options.deepScanPass) ||
         !options.outputDir ||
         options.archiveExisting ||
         options.parentScanId !== undefined ||
@@ -3317,6 +3330,83 @@ async function removeTargetPathsFile(path: string | null): Promise<void> {
     await chmod(path, 0o600);
     await rm(path, { force: true });
   }
+}
+
+function prepareSavedScanRecipe({
+  expectation,
+  session,
+  options,
+  knowledgeBasePaths,
+  knowledgeBaseSha256,
+  deepScan,
+}: {
+  expectation: ScanExpectation;
+  session: PreparedExecution;
+  options: Pick<
+    ScanOptions,
+    | "failureSeverity"
+    | "maxCostUsd"
+    | "auth"
+    | "scanPrompt"
+    | "safetyIdentifier"
+    | "postScanPrompt"
+    | "validationPrompt"
+  >;
+  knowledgeBasePaths?: string[];
+  knowledgeBaseSha256?: string;
+  deepScan?: Required<DeepScanOptions>;
+}): JsonObject {
+  const {
+    runtime,
+    runtimeHome,
+    preflightConfig,
+    effectiveConfig,
+    approvalPolicy,
+  } = session;
+  const recipe = scanRecipe({
+    repository: expectation.repository,
+    target: expectation.target,
+    mode: expectation.mode,
+    repositoryRevision: expectation.repositoryRevision,
+    pluginVersion: runtime.plugin.version,
+    config: { ...preflightConfig, approval_policy: approvalPolicy },
+    failOnSeverity: options.failureSeverity,
+    knowledgeBasePaths,
+    maxCostUsd: options.maxCostUsd,
+    deepScan,
+    auth: options.auth,
+  });
+  if (knowledgeBaseSha256 !== undefined)
+    recipe["knowledgeBaseSha256"] = knowledgeBaseSha256;
+  if (session.inheritedPermissions !== undefined) {
+    const savedConfig = structuredClone(effectiveConfig);
+    removeManagedPluginRegistration(savedConfig);
+    recipe["config"] = {
+      ...savedConfig,
+      approval_policy: approvalPolicy,
+    };
+    recipe["inheritedPermissions"] = session.inheritedPermissions;
+  } else if (session.source.preserveProviderEnvironment) {
+    const nativeConfig = sharedCredentialCodexConfig(
+      effectiveConfig,
+      runtimeHome,
+    );
+    const savedConfig = recipe["config"] as JsonObject;
+    for (const key of ["model_providers", ...CODEX_AUTH_CONFIG_KEYS]) {
+      if (nativeConfig[key] !== undefined)
+        savedConfig[key] = nativeConfig[key]!;
+    }
+  }
+  if (session.source.preserveProviderEnvironment)
+    recipe["preserveProviderEnvironment"] = true;
+  if (options.scanPrompt?.trim()) recipe["requiresScanPrompt"] = true;
+  if (options.safetyIdentifier !== undefined)
+    recipe["safetyIdentifier"] = options.safetyIdentifier;
+  if (options.postScanPrompt !== undefined)
+    recipe["postScanPrompt"] = options.postScanPrompt;
+  if (options.validationPrompt !== undefined)
+    recipe["validationMode"] = "custom";
+  return recipe;
 }
 
 function scanRecipe({
