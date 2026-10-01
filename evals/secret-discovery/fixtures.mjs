@@ -94,21 +94,38 @@ export function createFixture() {
       "",
     ].join("\n"),
   };
-  const positive = (id, path, marker, cwes) => ({
+  const positive = (
+    id,
+    path,
+    marker,
+    cwes,
+    consumerMarker,
+    endMarker = marker,
+  ) => ({
     id,
     path,
     line:
       files[path].split("\n").findIndex((line) => line.includes(marker)) + 1,
+    endLine:
+      files[path].split("\n").findIndex((line) => line.includes(endMarker)) + 1,
     lineCount: files[path].trimEnd().split("\n").length,
+    consumerLine: consumerMarker
+      ? files[path]
+          .split("\n")
+          .findIndex((line) => line.includes(consumerMarker)) + 1
+      : null,
     cwes,
   });
   return {
     files,
     positives: [
-      positive("active-source", "src/client.py", "SERVICE_TOKEN =", [
-        "CWE-798",
-        "CWE-522",
-      ]),
+      positive(
+        "active-source",
+        "src/client.py",
+        "SERVICE_TOKEN =",
+        ["CWE-798", "CWE-522"],
+        "def delivery_request",
+      ),
       positive("unused-source", "src/retired.py", "LEGACY_SERVICE_TOKEN =", [
         "CWE-798",
         "CWE-522",
@@ -118,6 +135,7 @@ export function createFixture() {
         "tests/test_delivery.py",
         "INTEGRATION_TOKEN =",
         ["CWE-798", "CWE-522"],
+        "def integration_request",
       ),
       positive("dotenv-url", "config/.env", "DATABASE_URL=", [
         "CWE-798",
@@ -130,11 +148,14 @@ export function createFixture() {
         "CWE-312",
         "CWE-522",
       ]),
-      positive("private-key", "src/signing.mjs", "const signingKey", [
-        "CWE-321",
-        "CWE-798",
-        "CWE-312",
-      ]),
+      positive(
+        "private-key",
+        "src/signing.mjs",
+        "const signingKey",
+        ["CWE-321", "CWE-798", "CWE-312"],
+        "export function signMessage",
+        "-----END PRIVATE KEY-----",
+      ),
     ],
     negatives: [
       "src/runtime_config.py",

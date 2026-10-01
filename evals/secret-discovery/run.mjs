@@ -17,13 +17,15 @@ const root = await mkdtemp(join(tmpdir(), "source-audit-"));
 const home = await createIsolatedHome();
 console.log(`Eval artifacts: ${reportDirectory}`);
 try {
-  await importAmbientAuth(
+  const hasLogin = await importAmbientAuth(
     process.env.CODEX_HOME || join(homedir(), ".codex"),
     home,
   );
   const prepared = await prepareEval(root);
   const codexPath = await realpath(resolveCodexCommand({}).command);
-  const codex = new Codex(codexSettings(home, codexPath));
+  const codex = new Codex(
+    codexSettings(home, codexPath, process.env, hasLogin),
+  );
   const { report, semanticResult } = await runPreparedEval(prepared, codex, {
     model: process.argv[2],
   });

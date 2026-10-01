@@ -194,6 +194,66 @@ test("a supporting citation cannot satisfy an independently missed exposure", ()
   assert.equal(report.passed, false);
 });
 
+test("accepts real credential-use sinks without treating them as separate exposures", () => {
+  const fixture = createFixture();
+  const result = retainedResult(fixture);
+  for (const [index, expected] of fixture.positives.entries()) {
+    if (expected.consumerLine === null) continue;
+    const sink = {
+      path: expected.path,
+      startLine: expected.consumerLine,
+      endLine: expected.lineCount,
+      role: "sink",
+    };
+    result.findings[index].locations.push(sink);
+    const onlyConsumer = retainedResult(fixture);
+    onlyConsumer.findings[index].locations = [sink];
+    assert.equal(gradeResult(onlyConsumer, fixture).cases[index].found, false);
+  }
+  assert.equal(gradeResult(result, fixture).passed, true);
+
+  for (const location of [
+    { path: "README.md", startLine: 1 },
+    { path: "src/absent.py", startLine: 5 },
+    { path: "src/client.py", startLine: 1 },
+  ]) {
+    const invalid = retainedResult(fixture);
+    invalid.findings[0].locations.push({ ...location, role: "sink" });
+    assert.equal(gradeResult(invalid, fixture).falsePositiveCount, 1);
+  }
+});
+
+test("accepts the private-key body and rejects reversed source ranges", () => {
+  const fixture = createFixture();
+  const result = retainedResult(fixture);
+  const keyIndex = fixture.positives.findIndex(
+    (entry) => entry.id === "private-key",
+  );
+  result.findings[keyIndex].locations[0].startLine++;
+  assert.equal(gradeResult(result, fixture).passed, true);
+  result.findings[keyIndex].locations[0].endLine =
+    fixture.positives[keyIndex].line;
+  assert.equal(gradeResult(result, fixture).passed, false);
+});
+
+test("OpenAI environment auth is a fallback for missing file login and Codex key", () => {
+  const env = { OPENAI_API_KEY: "synthetic-openai-key" };
+  assert.equal(
+    codexSettings("/tmp/home", "/tmp/bin/codex", env).apiKey,
+    env.OPENAI_API_KEY,
+  );
+  assert.equal(
+    codexSettings("/tmp/home", "/tmp/bin/codex", env, true).apiKey,
+    undefined,
+  );
+  const settings = codexSettings("/tmp/home", "/tmp/bin/codex", {
+    ...env,
+    CODEX_API_KEY: "synthetic-codex-key",
+  });
+  assert.equal(settings.apiKey, undefined);
+  assert.equal(settings.env.CODEX_API_KEY, "synthetic-codex-key");
+});
+
 test("detects token and multiline private-key leakage anywhere in the result", () => {
   const fixture = createFixture();
   const result = retainedResult(fixture);

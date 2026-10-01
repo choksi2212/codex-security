@@ -21,7 +21,8 @@ function matchesLocation(location, expected) {
     Number.isInteger(location.startLine) &&
     Number.isInteger(end) &&
     location.startLine > 0 &&
-    location.startLine <= expected.line &&
+    location.startLine <= expected.endLine &&
+    end >= location.startLine &&
     end >= expected.line &&
     end <= expected.lineCount
   );
@@ -40,6 +41,20 @@ function matches(finding, expected) {
   );
 }
 
+function matchesConsumer(location, expected) {
+  const end = location.endLine ?? location.startLine;
+  return (
+    location.role === "sink" &&
+    location.path === expected.path &&
+    expected.consumerLine !== null &&
+    Number.isInteger(location.startLine) &&
+    Number.isInteger(end) &&
+    location.startLine >= expected.consumerLine &&
+    end >= location.startLine &&
+    end <= expected.lineCount
+  );
+}
+
 /** Grade retained final findings, never keyword mentions or deferred candidates. */
 export function gradeResult(result, fixture) {
   const errors = [];
@@ -54,8 +69,10 @@ export function gradeResult(result, fixture) {
       .filter(
         (location) =>
           !supportingLocation(location) &&
-          !fixture.positives.some((expected) =>
-            matchesLocation(location, expected),
+          !fixture.positives.some(
+            (expected) =>
+              matchesLocation(location, expected) ||
+              matchesConsumer(location, expected),
           ),
       )
       .map((location) => location.path);

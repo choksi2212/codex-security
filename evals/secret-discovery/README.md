@@ -24,6 +24,8 @@ or fragments of at least 16 characters reproduced anywhere in the final semantic
 result. Fixed private-key encoding headers do not count as secret material.
 Finding counts alone cannot pass the eval. Explicitly labeled supporting
 locations do not turn benign context into a false positive.
+Known credential-use sites may also be cited as sinks, but cannot substitute for
+the source location that exposes the credential.
 
 ## Run
 

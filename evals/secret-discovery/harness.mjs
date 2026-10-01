@@ -141,7 +141,12 @@ export function threadSettings(prepared, model) {
   };
 }
 
-export function codexSettings(home, codexPath, environment = process.env) {
+export function codexSettings(
+  home,
+  codexPath,
+  environment = process.env,
+  hasLogin = false,
+) {
   const nativePackage = dirname(dirname(codexPath));
   // Keep unrelated service credentials out of the eval process entirely.
   const inherited = new Set([
@@ -168,6 +173,10 @@ export function codexSettings(home, codexPath, environment = process.env) {
   ]);
   return {
     codexPathOverride: codexPath,
+    // Native exec reads CODEX_API_KEY; let the SDK map the OpenAI fallback.
+    ...(!hasLogin && !environment.CODEX_API_KEY && environment.OPENAI_API_KEY
+      ? { apiKey: environment.OPENAI_API_KEY }
+      : {}),
     env: {
       ...Object.fromEntries(
         Object.entries(environment).filter(
