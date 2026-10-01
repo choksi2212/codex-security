@@ -30,11 +30,12 @@ jobs:
 
   scan:
     name: OpenAI source scan
-    # Only trusted same-repository PRs receive the inference credential.
+    # Inference runs only from the protected default branch after environment approval.
     if: >-
-      github.event_name != 'pull_request' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
-       github.actor != 'dependabot[bot]')
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      github.ref_protected
+    environment: invoice-desk-inference
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -61,7 +62,7 @@ jobs:
             "@openai/codex-security@$CODEX_SECURITY_VERSION"
           echo "$RUNNER_TEMP/codex-security-cli/node_modules/.bin" >> "$GITHUB_PATH"
 
-      - name: Check out the pull request merge commit
+      - name: Check out the approved workflow commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -79,7 +80,7 @@ jobs:
           CODEX_SECURITY_STATE_DIR: ${{ runner.temp }}/invoice-desk-state
         run: |
           if [[ -z "$OPENAI_API_KEY" ]]; then
-            echo "::error::Configure the OPENAI_API_KEY Actions secret to run the Invoice Desk scan."
+            echo "::error::Configure OPENAI_API_KEY in the protected invoice-desk-inference environment."
             echo "exit-code=2" >> "$GITHUB_OUTPUT"
             exit 2
           fi
@@ -90,29 +91,6 @@ jobs:
             --headless --format json \
             --output-dir "$RUNNER_TEMP/invoice-desk-scan" \
             > "$RUNNER_TEMP/invoice-desk-result.json" || scan_status=$?
-          if [[ "$scan_status" != 0 ]]; then
-            python3 - <<'PY' || true
-          import json
-          import os
-          import urllib.error
-          import urllib.request
-
-          request = urllib.request.Request(
-              "https://api.openai.com/v1/models",
-              headers={"Authorization": "Bearer " + os.environ["OPENAI_API_KEY"]},
-          )
-          try:
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  models = json.load(response)["data"]
-                  available = any(model["id"] == "gpt-5.6-sol" for model in models)
-                  print(f"OpenAI API check: HTTP {response.status}; configured model listed: {available}.")
-          except urllib.error.HTTPError as error:
-              details = json.load(error).get("error", {})
-              print(f"OpenAI API check: HTTP {error.code}; error code: {details.get('code')}; type: {details.get('type')}.")
-          except urllib.error.URLError:
-              print("OpenAI API check: unable to reach the API.")
-          PY
-          fi
           echo "exit-code=$scan_status" >> "$GITHUB_OUTPUT"
           exit "$scan_status"
 
@@ -150,7 +128,7 @@ jobs:
                   counts = Counter(finding["severity"]["level"] for finding in findings)
                   summary.write(f"Reported findings: **{len(findings)}**. Coverage: **{coverage}**.\n\n")
                   summary.write("| Severity | Count |\n| --- | --- |\n")
-                  for severity in ("critical", "high", "medium", "low"):
+                  for severity in ("critical", "high", "medium", "low", "informational"):
                       summary.write(f"| {severity} | {counts[severity]} |\n")
                   summary.write("\nDownload the report artifact to review findings against the ten expected root causes. Raw counts can include additional findings or duplicates; this run does not assert scanner recall.\n")
               summary.write("\nScanner: @openai/codex-security@" + os.environ["CODEX_SECURITY_VERSION"] + "; OpenAI gpt-5.6-sol; standard mode; high effort.\n")

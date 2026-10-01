@@ -47,29 +47,35 @@ present.** They do not mean the application is secure or that a scanner found
 ten issues. The repository's Invoice Desk workflow runs this suite in CI without
 installing dependencies.
 
-## Pull request scans with OpenAI
+## CI and OpenAI scans
 
-The [Invoice Desk workflow](../../.github/workflows/invoice-desk.yml) also runs a
-Codex Security scan on every same-repository pull request, including drafts,
-regardless of which files changed. Add an `OPENAI_API_KEY` repository or
-organization Actions secret with access to `gpt-5.6-sol`. Missing credentials
-fail the scan job with a setup error. Fork and Dependabot pull requests run the
-behavior tests but skip the credentialed scan. Manual runs are available once
-the workflow is on the default branch.
+The [Invoice Desk workflow](../../.github/workflows/invoice-desk.yml) runs behavior
+tests on every pull request, including drafts, regardless of which files changed.
+Pull request jobs do not receive inference credentials. A Codex Security scan is
+available through a manual run on the protected default branch, after approval
+of the `invoice-desk-inference` GitHub environment.
+
+Before enabling inference, configure that environment with required reviewers
+and a deployment branch rule allowing only the protected default branch. Store
+a dedicated service-account key as its `OPENAI_API_KEY` environment secret,
+with access to `gpt-5.6-sol`. Do not use a repository or organization Actions
+secret for this workflow. The credential must also permit API access from the
+selected runner's network; creating a service account does not establish that
+permission. Missing credentials fail the scan job with a setup error.
 
 This adapts the existing [GitHub Actions example](../github-actions/README.md) to
 OpenAI inference. It pins CLI 0.1.30 and uses standard mode with high effort on
 Node.js 24 and Python 3.12. It scans the entire standalone application on each
 run, not a PR diff, so unchanged seeded cases remain in scope. Inference consumes
-API usage, and newer runs cancel older runs for the same pull request.
+API usage, and newer runs cancel older runs for the same ref.
 
 The workflow installs the CLI outside the checkout, copies only `app/` into a
 fresh directory, and starts the scanner from that directory with separate state.
 The sample documentation, threat model, tests, answer key, and previous reports
 are not scan input. The API key is available only in the scan step; no GitHub token
-is passed to the scanner. Only trusted contributors who can push repository
-branches should receive this secret; use a protected GitHub environment if
-additional approval is required.
+is passed to the scanner. Review changes to the application and workflow before
+merging and approving an inference run. A passing pull request check verifies
+application behavior only; it does not mean a source scan ran.
 
 The Actions summary shows the total finding count, severity counts, and coverage.
 A seven-day artifact contains the Markdown report, findings and coverage JSON,
@@ -83,11 +89,6 @@ do fail it, with available reports retained. There is no exact-count or recall
 gate yet: compare returned root causes with the QA manifest, and review extras
 and duplicates separately. A successful scan job means the scan completed, not
 that the sample is secure or that all ten scenarios were detected.
-
-After a scanner failure, a diagnostic request checks API authentication and
-whether the configured model is listed. It prints only status and error codes,
-never credentials or the API's account-specific error message. This diagnostic
-does not change the scan's exit status.
 
 ## Scan without including the answer key
 

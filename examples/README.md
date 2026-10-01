@@ -26,8 +26,8 @@ Examples and templates for using Codex Security:
   ten seeded finding scenarios, synthetic data, and an HTTP QA suite. It runs on
   Node.js without dependencies or external services. Sample documentation and
   expected findings stay outside the application directory used for scanning.
-  Its [PR workflow](invoice-desk/README.md#pull-request-scans-with-openai) runs the
-  CLI with OpenAI inference and saves finding counts and reports for QA.
+  Its [CI workflow](invoice-desk/README.md#ci-and-openai-scans) runs behavior tests
+  on PRs and offers approved manual OpenAI scans with finding counts and reports.
 
 - [Azure Pipelines with Amazon Bedrock](azure-pipelines/README.md): centrally run
   manual full or committed-diff scans against Azure Repos, with OIDC credentials,
