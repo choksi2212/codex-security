@@ -2724,10 +2724,13 @@ describe("CodexSecurity orchestration", () => {
     });
     expect(threadOptions as Record<string, unknown> | null).toEqual({
       threadSource: "security_scan",
-      workingDirectory: scanDir,
+      workingDirectory: expect.any(String),
       skipGitRepoCheck: true,
       approvalPolicy: "on-request",
     });
+    expect(
+      dirname((threadOptions as ThreadOptions | null)?.workingDirectory ?? ""),
+    ).toBe(join(scanDir, "artifacts/follow-up"));
     expect((codexOptions as CodexOptions | null)?.apiKey).toBeUndefined();
     expect((codexOptions as CodexOptions | null)?.env).not.toHaveProperty(
       "Codex_Home",
