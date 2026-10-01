@@ -4,6 +4,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFixture, writeFixture } from "./fixtures.mjs";
 import { gradeResult } from "./grade.mjs";
+import {
+  deepScanPermissionProfileFallbackError,
+  preflightDeepScanWorkerPermissionProfile,
+} from "./runtime.mjs";
 
 const pluginRoot = fileURLToPath(
   new URL("../../plugins/codex-security/", import.meta.url),
@@ -147,7 +151,6 @@ export function codexSettings(
   environment = process.env,
   hasLogin = false,
 ) {
-  const nativePackage = dirname(dirname(codexPath));
   // Keep unrelated service credentials out of the eval process entirely.
   const inherited = new Set([
     "PATH",
@@ -188,40 +191,121 @@ export function codexSettings(
       CODEX_SQLITE_HOME: home,
       CODEX_CLI_PATH: codexPath,
     },
-    config: {
-      default_permissions: "discovery_eval",
-      allow_login_shell: false,
-      shell_environment_policy: {
-        inherit: "core",
-        ignore_default_excludes: false,
-      },
-      features: {
-        memories: false,
-        plugins: false,
-        multi_agent: false,
-        shell_snapshot: false,
-      },
-    },
     // Raw TOML preserves literal filesystem keys that SDK object flattening loses.
     // Everything outside the source, references, and minimal runtime is unreadable.
     configOverrides: [
-      `permissions.discovery_eval={filesystem={":minimal"="read",":workspace_roots"="read",${JSON.stringify(nativePackage)}="read",${JSON.stringify(resolve(home))}="deny"},network={enabled=false}}`,
+      'default_permissions="discovery_eval"',
+      "allow_login_shell=false",
+      'shell_environment_policy.inherit="core"',
+      "shell_environment_policy.ignore_default_excludes=false",
+      "features.memories=false",
+      "features.plugins=false",
+      "features.multi_agent=false",
+      "features.shell_snapshot=false",
+      'approval_policy="never"',
+      'model_reasoning_effort="xhigh"',
+      'web_search="disabled"',
+      `permissions.discovery_eval={filesystem={${Object.entries(
+        permissionProfile(home, codexPath).filesystem,
+      )
+        .map(
+          ([path, access]) =>
+            `${JSON.stringify(path)}=${JSON.stringify(access)}`,
+        )
+        .join(",")}},network={enabled=false}}`,
     ],
   };
 }
 
-export async function runPreparedEval(prepared, codex, { model } = {}) {
+function permissionProfile(home, codexPath) {
+  return {
+    filesystem: {
+      ":minimal": "read",
+      ":workspace_roots": "read",
+      [dirname(dirname(codexPath))]: "read",
+      [resolve(home)]: "deny",
+    },
+    network: { enabled: false },
+  };
+}
+
+export async function preflightEval(prepared, settings, signal) {
+  await preflightDeepScanWorkerPermissionProfile({
+    codexPath: settings.codexPathOverride,
+    cwd: prepared.repo,
+    profileId: "discovery_eval",
+    configOverrides: settings.configOverrides,
+    env: {
+      ...settings.env,
+      ...(settings.apiKey ? { CODEX_API_KEY: settings.apiKey } : {}),
+    },
+    expectedProfile: permissionProfile(
+      settings.env.CODEX_HOME,
+      settings.codexPathOverride,
+    ),
+    signal,
+  });
+}
+
+export async function runPreparedEval(prepared, codex, { model, signal } = {}) {
   const thread = codex.startThread(threadSettings(prepared, model));
-  const result = await thread.run(prepared.prompt, { outputSchema });
-  const semanticResult = JSON.parse(result.finalResponse);
+  const controller = new AbortController();
+  const combinedSignal = signal
+    ? AbortSignal.any([signal, controller.signal])
+    : controller.signal;
+  const { events } = await thread.runStreamed(prepared.prompt, {
+    outputSchema,
+    signal: combinedSignal,
+  });
+  let finalResponse = "";
+  let usage;
+  let completed = false;
+  let failure;
+  try {
+    for await (const event of events) {
+      const warning =
+        event.type === "error"
+          ? event.message
+          : event.type === "item.completed" && event.item.type === "error"
+            ? event.item.message
+            : undefined;
+      const fallback = deepScanPermissionProfileFallbackError(
+        warning,
+        "discovery_eval",
+      );
+      if (fallback && !failure) {
+        failure = fallback;
+        controller.abort(fallback);
+      }
+      // Drain the aborted SDK stream so its child exits before state cleanup.
+      if (failure) continue;
+      if (
+        event.type === "item.completed" &&
+        event.item.type === "agent_message"
+      ) {
+        finalResponse = event.item.text;
+      } else if (event.type === "turn.completed") {
+        completed = true;
+        usage = event.usage;
+      } else if (event.type === "turn.failed") {
+        failure = new Error(event.error.message);
+      }
+    }
+  } catch (error) {
+    throw failure ?? error;
+  }
+  if (failure) throw failure;
+  combinedSignal.throwIfAborted();
+  if (!completed) throw new Error("Eval stream ended before turn.completed");
+  const semanticResult = JSON.parse(finalResponse);
   const report = {
     requestedModel: model ?? null,
     modelSelection: model
       ? "explicit"
       : "Codex default; SDK does not expose resolved model",
     promptSha256: prepared.promptSha256,
-    ...gradeResult(semanticResult, prepared.fixture),
-    usage: result.usage,
+    ...gradeResult(semanticResult, prepared.fixture, prepared.repo),
+    usage,
   };
   return { report, semanticResult };
 }

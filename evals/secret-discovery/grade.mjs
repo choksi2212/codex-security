@@ -1,9 +1,36 @@
+import { posix, win32 } from "node:path";
+
 const explicitSecretCategory =
   /secret|credential|private[-_ ]?key|hard[-_ ]?cod/i;
 const secretCategory =
   /secret|credential|private[-_ ]?key|hard[-_ ]?cod|sensitive[-_ ]?(?:data|information)[-_ ]?exposure/i;
 const supportingLocation = (location) =>
-  /^(?:supporting|support|context|consumer)$/.test(location.role ?? "");
+  /^(?:supporting|support|context|consumer|expected_control)$/.test(
+    location.role ?? "",
+  );
+
+function matchesExclusion(path, pattern, repo) {
+  const paths = [repo, pattern].some(
+    (value) => value && win32.parse(value).root.length > 1,
+  )
+    ? win32
+    : posix;
+  let normalized = paths.normalize(pattern);
+  if (
+    normalized.endsWith(paths.sep) &&
+    normalized !== paths.parse(normalized).root
+  ) {
+    normalized = normalized.slice(0, -1);
+  }
+  let entry = paths.isAbsolute(pattern) && repo ? paths.join(repo, path) : path;
+  // A directory exclusion also excludes the fixture files beneath it.
+  while (true) {
+    if (paths.matchesGlob(entry, normalized)) return true;
+    const parent = paths.dirname(entry);
+    if (parent === entry) return false;
+    entry = parent;
+  }
+}
 
 function strings(value) {
   if (typeof value === "string") return [value];
@@ -56,7 +83,7 @@ function matchesConsumer(location, expected) {
 }
 
 /** Grade retained final findings, never keyword mentions or deferred candidates. */
-export function gradeResult(result, fixture) {
+export function gradeResult(result, fixture, repo) {
   const errors = [];
   const findings = Array.isArray(result?.findings) ? result.findings : [];
   if (!Array.isArray(result?.findings)) errors.push("missing findings array");
@@ -103,6 +130,11 @@ export function gradeResult(result, fixture) {
     result.coverage.deferred?.length ||
     result.coverage.surfaces?.some(
       (surface) => surface.disposition === "needs_follow_up",
+    ) ||
+    result.coverage.explicitExclusions?.some(({ pattern }) =>
+      Object.keys(fixture.files).some((path) =>
+        matchesExclusion(path, pattern, repo),
+      ),
     )
   )
     errors.push("incomplete coverage");

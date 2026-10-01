@@ -3,6 +3,7 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { parse } from "../../sdk/typescript/node_modules/smol-toml/dist/index.js";
 import { createFixture } from "./fixtures.mjs";
 import { gradeResult } from "./grade.mjs";
 import {
@@ -25,6 +26,7 @@ function retainedResult(fixture) {
     coverage: {
       completeness: "complete",
       surfaces: [],
+      explicitExclusions: [],
       deferred: [],
       openQuestions: [],
     },
@@ -145,16 +147,18 @@ for (const negativeIndex of [0, 1, 2, 3]) {
   });
 }
 
-test("benign supporting context does not become a false positive", () => {
-  const fixture = createFixture();
-  const result = retainedResult(fixture);
-  result.findings[0].locations.push({
-    path: fixture.negatives[0],
-    startLine: 1,
-    role: "supporting",
+for (const role of ["supporting", "expected_control"]) {
+  test(`benign ${role} context does not become a false positive`, () => {
+    const fixture = createFixture();
+    const result = retainedResult(fixture);
+    result.findings[0].locations.push({
+      path: fixture.negatives[0],
+      startLine: 1,
+      role,
+    });
+    assert.equal(gradeResult(result, fixture).passed, true);
   });
-  assert.equal(gradeResult(result, fixture).passed, true);
-});
+}
 
 for (const [name, location] of [
   ["unrelated source file", { path: "README.md", startLine: 1 }],
@@ -181,18 +185,20 @@ test("multiple expected exposures can share a finding", () => {
   assert.equal(gradeResult(result, fixture).passed, true);
 });
 
-test("a supporting citation cannot satisfy an independently missed exposure", () => {
-  const fixture = createFixture();
-  const result = retainedResult(fixture);
-  const unused = result.findings.splice(1, 1)[0];
-  result.findings[0].locations.push({
-    ...unused.locations[0],
-    role: "supporting",
+for (const role of ["supporting", "expected_control"]) {
+  test(`${role} citations cannot satisfy an independently missed exposure`, () => {
+    const fixture = createFixture();
+    const result = retainedResult(fixture);
+    const unused = result.findings.splice(1, 1)[0];
+    result.findings[0].locations.push({
+      ...unused.locations[0],
+      role,
+    });
+    const report = gradeResult(result, fixture);
+    assert.equal(report.cases[1].found, false);
+    assert.equal(report.passed, false);
   });
-  const report = gradeResult(result, fixture);
-  assert.equal(report.cases[1].found, false);
-  assert.equal(report.passed, false);
-});
+}
 
 test("accepts real credential-use sinks without treating them as separate exposures", () => {
   const fixture = createFixture();
@@ -359,6 +365,105 @@ test("complete coverage permits reviewed surfaces and nonblocking questions", ()
   assert.equal(gradeResult(result, fixture).passed, true);
 });
 
+for (const pattern of [
+  "src/client.py",
+  "src/runtime_config.py",
+  "./README.md",
+  "**/test_*.py",
+  "config/.*",
+  "src",
+  "config/",
+  ".",
+  "/tmp/generated-repo/src/client.py",
+  "/tmp/generated-repo/**/*.py",
+  "/tmp/generated-repo/config/",
+  "/",
+]) {
+  test(`complete coverage cannot exclude fixture path ${pattern}`, () => {
+    const fixture = createFixture();
+    const result = retainedResult(fixture);
+    result.coverage.explicitExclusions.push({
+      pattern,
+      reason: "Not reviewed",
+    });
+    const report = gradeResult(result, fixture, "/tmp/generated-repo");
+    assert.equal(report.recall, 1);
+    assert.equal(report.passed, false);
+    assert.deepEqual(report.errors, ["incomplete coverage"]);
+  });
+}
+
+test("complete coverage permits exclusions outside the generated fixture", () => {
+  const fixture = createFixture();
+  const result = retainedResult(fixture);
+  result.coverage.explicitExclusions.push(
+    { pattern: "node_modules/**", reason: "No dependencies in fixture" },
+    { pattern: "https://delivery.example.test/**", reason: "Offline review" },
+    { pattern: "/tmp/external/**", reason: "Outside fixture" },
+    {
+      pattern: "/tmp/generated-repository/src/client.py",
+      reason: "Different repository",
+    },
+  );
+  assert.equal(
+    gradeResult(result, fixture, "/tmp/generated-repo").passed,
+    true,
+  );
+});
+
+for (const repo of [
+  String.raw`C:\Temp\repository`,
+  "C:/Temp/repository",
+  String.raw`\\server\share\repository`,
+  "//server/share/repository",
+]) {
+  test(`coverage matches Windows exclusions for ${repo}`, () => {
+    const fixture = createFixture();
+    const slashRepo = repo.replaceAll("\\", "/");
+    for (const pattern of [
+      `${slashRepo}/src/client.py`,
+      `${slashRepo}/src/client.py`.replaceAll("/", "\\"),
+      `${slashRepo}/**/*.py`,
+      `${slashRepo}/config/`,
+      String.raw`src\client.py`,
+    ]) {
+      const result = retainedResult(fixture);
+      result.coverage.explicitExclusions.push({
+        pattern,
+        reason: "Not reviewed",
+      });
+      const report = gradeResult(result, fixture, repo);
+      assert.equal(report.recall, 1);
+      assert.equal(report.passed, false, pattern);
+      assert.deepEqual(report.errors, ["incomplete coverage"]);
+    }
+    const external = retainedResult(fixture);
+    external.coverage.explicitExclusions.push(
+      {
+        pattern: `${slashRepo}-external/src/client.py`,
+        reason: "Outside fixture",
+      },
+      {
+        pattern: String.raw`D:\Other\repository\**`,
+        reason: "Different drive",
+      },
+    );
+    assert.equal(gradeResult(external, fixture, repo).passed, true);
+  });
+}
+
+test("Windows drive casing does not hide an in-scope exclusion", () => {
+  const fixture = createFixture();
+  const result = retainedResult(fixture);
+  result.coverage.explicitExclusions.push({
+    pattern: "c:/Temp/repository/src/client.py",
+    reason: "Not reviewed",
+  });
+  const report = gradeResult(result, fixture, String.raw`C:\Temp\repository`);
+  assert.equal(report.passed, false);
+  assert.deepEqual(report.errors, ["incomplete coverage"]);
+});
+
 test("stages production prompt unchanged and no labels; grades only the final SDK response", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "source-audit-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -395,21 +500,33 @@ test("stages production prompt unchanged and no labels; grades only the final SD
     startThread(options) {
       settings = options;
       return {
-        async run(prompt, options) {
+        async runStreamed(prompt, options) {
           assert.equal(prompt, prepared.prompt);
           assert.ok(options.outputSchema.properties.findings);
           return {
-            items: [
-              {
-                type: "agent_message",
-                text: JSON.stringify(retainedResult(prepared.fixture)),
-              },
-            ],
-            finalResponse: JSON.stringify({
-              findings: [],
-              coverage: { completeness: "complete" },
-            }),
-            usage: { input_tokens: 1, output_tokens: 1 },
+            events: (async function* () {
+              yield {
+                type: "item.completed",
+                item: {
+                  type: "agent_message",
+                  text: JSON.stringify(retainedResult(prepared.fixture)),
+                },
+              };
+              yield {
+                type: "item.completed",
+                item: {
+                  type: "agent_message",
+                  text: JSON.stringify({
+                    findings: [],
+                    coverage: { completeness: "complete" },
+                  }),
+                },
+              };
+              yield {
+                type: "turn.completed",
+                usage: { input_tokens: 1, output_tokens: 1 },
+              };
+            })(),
           };
         },
       };
@@ -432,6 +549,7 @@ test("named read-only profile excludes gold and credentials without a legacy san
     CODEX_SQLITE_HOME: "/tmp/ambient-state",
     CODEX_CLI_PATH: "/tmp/ambient-codex",
   });
+  const config = parse(settings.configOverrides.join("\n"));
   assert.deepEqual(settings.env, {
     PATH: "/usr/bin",
     CODEX_API_KEY: "synthetic-model-auth",
@@ -440,24 +558,26 @@ test("named read-only profile excludes gold and credentials without a legacy san
     CODEX_CLI_PATH: codexPath,
   });
   assert.equal(settings.codexPathOverride, codexPath);
-  assert.equal(settings.config.default_permissions, "discovery_eval");
-  assert.equal(settings.config.features.plugins, false);
-  assert.equal(settings.config.features.memories, false);
-  assert.equal(settings.config.features.shell_snapshot, false);
-  assert.equal(settings.config.allow_login_shell, false);
-  assert.deepEqual(settings.config.shell_environment_policy, {
-    inherit: "core",
-    ignore_default_excludes: false,
-  });
-  assert.equal(settings.configOverrides.length, 1);
-  assert.match(
-    settings.configOverrides[0],
-    /":minimal"="read",":workspace_roots"="read"/,
+  assert.equal(config.default_permissions, "discovery_eval");
+  assert.equal(config.features.plugins, false);
+  assert.equal(config.features.memories, false);
+  assert.equal(config.features.shell_snapshot, false);
+  assert.equal(config.allow_login_shell, false);
+  assert.deepEqual(
+    { ...config.shell_environment_policy },
+    {
+      inherit: "core",
+      ignore_default_excludes: false,
+    },
   );
-  assert.match(settings.configOverrides[0], /"\/tmp\/eval-home"="deny"/);
-  assert.match(settings.configOverrides[0], /"\/tmp\/native-package"="read"/);
-  assert.match(settings.configOverrides[0], /network=\{enabled=false\}/);
-  assert.doesNotMatch(settings.configOverrides[0], /":root"="read"/);
+  const profileOverride = settings.configOverrides.find((value) =>
+    value.startsWith("permissions.discovery_eval="),
+  );
+  assert.match(profileOverride, /":minimal"="read",":workspace_roots"="read"/);
+  assert.match(profileOverride, /"\/tmp\/eval-home"="deny"/);
+  assert.match(profileOverride, /"\/tmp\/native-package"="read"/);
+  assert.match(profileOverride, /network=\{enabled=false\}/);
+  assert.doesNotMatch(profileOverride, /":root"="read"/);
   assert.equal(
     threadSettings({ repo: "/tmp/repo", runtime: "/tmp/runtime" }).sandboxMode,
     undefined,

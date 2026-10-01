@@ -19,19 +19,23 @@ explicitly identifies credential, secret, hardcoding, or private-key exposure.
 Mentions in resolved questions, intermediate responses, or deferred coverage do
 not count.
 The grader also rejects unrelated non-supporting locations, incomplete coverage
-(including deferred work or surfaces needing follow-up), and credential values
-or fragments of at least 16 characters reproduced anywhere in the final semantic
-result. Fixed private-key encoding headers do not count as secret material.
+(including deferred work, surfaces needing follow-up, or exclusions matching
+current fixture files), and credential values or fragments of at least 16
+characters reproduced anywhere in the final semantic result. Fixed private-key
+encoding headers do not count as secret material.
 Finding counts alone cannot pass the eval. Explicitly labeled supporting
 locations do not turn benign context into a false positive.
+The production `expected_control` role is supporting context and cannot satisfy
+recall. Exclusions outside the generated repository remain allowed.
 Known credential-use sites may also be cited as sinks, but cannot substitute for
 the source location that exposes the credential.
 
 ## Run
 
-Use the repository's normal setup to install the MCP app dependencies and build
-the TypeScript SDK. This eval reuses their pinned Codex SDK, CLI, and isolated
-authentication-home helper; it adds no dependencies.
+Use the repository's normal setup to install dependencies and build the
+TypeScript SDK. This eval reuses its pinned Codex SDK, CLI, esbuild, and isolated
+authentication-home helper; it adds no dependencies. The MCP app source supplies
+the existing permission-profile preflight helper, bundled locally by esbuild.
 
 ```sh
 node evals/secret-discovery/run.mjs
@@ -43,16 +47,21 @@ result does not expose the selected model. The run consumes model usage
 and uses the caller's existing file-based Codex login or authentication
 environment. It creates a temporary private Codex home, copies existing login
 state with the SDK's authentication helper, and removes that home after the
-run. Only runtime, proxy/certificate, and model-authentication environment
-variables reach the Codex process; shell tools inherit Codex's core environment
-with default credential exclusions. Login shells and shell snapshots are
+run, including graceful SIGINT/SIGTERM cancellation. Cancellation waits for the
+SDK turn to stop before removing temporary state. Only runtime,
+proxy/certificate, and model-authentication environment variables reach the
+Codex process; shell tools inherit Codex's core environment with default
+credential exclusions. Login shells and shell snapshots are
 disabled. It does not print authentication data or put it in the source fixture
 or reports.
 
 Source inspection is offline and read-only. A named, deny-by-default filesystem
 profile allows only the generated repository, staged production references,
 and minimal executable runtime paths; the harness, gold labels, reports, and
-authentication home are not readable by model tools. The production prompt is
+authentication home are not readable by model tools. Before starting a model
+turn, the native permission preflight verifies the selected profile with the
+same source cwd, environment, and raw configuration overrides as the eval. A runtime fallback
+warning cancels the turn and discards its result. The production prompt is
 staged unchanged, with its SHA-256 recorded in the report. The caller supplies
 zero subagents and a compact semantic-output schema; this measures the complete
 core workflow's sequential fallback, not full SDK artifact publication or Deep
