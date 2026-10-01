@@ -84,6 +84,11 @@ gate yet: compare returned root causes with the QA manifest, and review extras
 and duplicates separately. A successful scan job means the scan completed, not
 that the sample is secure or that all ten scenarios were detected.
 
+After a scanner failure, a diagnostic request checks API authentication and
+whether the configured model is listed. It prints only status and error codes,
+never credentials or the API's account-specific error message. This diagnostic
+does not change the scan's exit status.
+
 ## Scan without including the answer key
 
 The standalone application is `app/`. The harness, scenario labels, and findings

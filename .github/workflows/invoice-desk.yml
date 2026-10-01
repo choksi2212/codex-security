@@ -90,6 +90,29 @@ jobs:
             --headless --format json \
             --output-dir "$RUNNER_TEMP/invoice-desk-scan" \
             > "$RUNNER_TEMP/invoice-desk-result.json" || scan_status=$?
+          if [[ "$scan_status" != 0 ]]; then
+            python3 - <<'PY' || true
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          request = urllib.request.Request(
+              "https://api.openai.com/v1/models",
+              headers={"Authorization": "Bearer " + os.environ["OPENAI_API_KEY"]},
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  models = json.load(response)["data"]
+                  available = any(model["id"] == "gpt-5.6-sol" for model in models)
+                  print(f"OpenAI API check: HTTP {response.status}; configured model listed: {available}.")
+          except urllib.error.HTTPError as error:
+              details = json.load(error).get("error", {})
+              print(f"OpenAI API check: HTTP {error.code}; error code: {details.get('code')}; type: {details.get('type')}.")
+          except urllib.error.URLError:
+              print("OpenAI API check: unable to reach the API.")
+          PY
+          fi
           echo "exit-code=$scan_status" >> "$GITHUB_OUTPUT"
           exit "$scan_status"
 
