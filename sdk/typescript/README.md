@@ -856,13 +856,28 @@ sandbox = "unelevated"
 ```
 
 Use `--model` to choose a model and `--effort minimal|low|medium|high|xhigh|max`
-for reasoning effort. Repeat `--codex KEY=VALUE` for other TOML settings:
+for reasoning effort. Both flags work with `scan`, `bulk-scan`, `scan-components`,
+`policy`, `validate`, `patch`, `verify-fix`, `suggest-owners`, `classify-severity`,
+`scans match`, and `scans compare`.
+
+Model IDs are passed through to Codex, including `gpt-6-astra`, `gpt-6.1-sol`,
+and `gpt-6-luna`; availability depends on your credentials and inference provider.
+For Astra and GPT-6.1 Sol, use `low`, `medium`, `high`, `xhigh`, or `max`, as
+documented in the [OpenAI model guide](https://developers.openai.com/api/docs/guides/latest-model).
+Omitting these flags preserves each command's defaults: scans, policy generation,
+validation, patching, verification, and owner suggestions use `gpt-6-sol`/`xhigh`;
+matching and severity classification use Codex's configured model and `medium` effort.
+
+Repeat `--codex KEY=VALUE` for other TOML settings on commands that support it:
 
 ```bash
 npx @openai/codex-security scan . \
-  --model gpt-5.6-terra \
+  --model gpt-6.1-sol \
   --effort high \
   --codex features.multi_agent_v2.max_concurrent_threads_per_session=4
+
+npx @openai/codex-security patch issues.md --model gpt-6-astra --effort max
+npx @openai/codex-security verify-fix issues.md --model gpt-6.1-sol --effort high
 ```
 
 The thread limit of `9` includes the parent and up to eight delegated workers.
@@ -879,9 +894,14 @@ or `features.plugins` are rejected, including in profiles. Multi-agent v2 must
 stay enabled: `agents.max_threads` and
 `features.multi_agent_v2.enabled=false` are rejected.
 
-`validate`, `patch`, and `verify-fix` accept `--auth`, `--effort`, and the `model`,
+`validate`, `patch`, and `verify-fix` accept `--auth`, `--model`, `--effort`, and the `model`,
 `model_reasoning_effort`, and `analytics.enabled` keys in `--codex`, but no
-other runtime overrides.
+other runtime overrides. Patch model and effort selections also apply to
+`--assess-patch-risk` follow-up assessments.
+
+`scans resume` and `scans rerun` retain the saved scan's settings. `dedupe` uses
+separate screening and review models, so it does not expose a single model/effort
+override. Commands that only read, import, or export artifacts do not need these flags.
 
 Use `--codex 'analytics.enabled=false'` to disable Codex usage analytics and
 built-in metrics for a command:
@@ -967,6 +987,8 @@ means an upper estimate is unavailable, including models without verified
 long-context rates. `cost.pricing` records the price source, verification date,
 processing tier, short-context rates, and verified long-context rates when known.
 Models without known short-context prices still have no cost estimate.
+GPT-6 Astra, GPT-6.1 Sol, and GPT-6 Luna have verified standard prices for cost
+estimates and `--max-cost` limits.
 
 For compatibility, `cacheWriteInputTokens` remains the reported token subtotal.
 `cacheWriteInputTokensReported: false` means at least one included usage record
@@ -1584,6 +1606,11 @@ Only high-confidence duplicates are grouped; uncertain and independently
 related findings stay separate. Matching preserves triage and sealed artifacts.
 
 Codex is called only when a new decision is needed, using existing authentication.
+Use `--model` and `--effort` on `scans match` or `scans compare` to select the model
+for new matching decisions. Changing these flags still reuses cached matches;
+use `scans match --force --model gpt-6.1-sol --effort high` with scan IDs, or
+`--all`, to recompute them. Omitting the flags uses Codex's configured model and
+`medium` reasoning effort.
 Scans without sealed artifacts are skipped, but their confirmed links can still
 be reused. Older custom plugins save confirmed and uncertain matches; use the
 bundled plugin for related links and large comparisons.
@@ -1765,7 +1792,8 @@ npx @openai/codex-security patch --linear-issue SEC-123 --assess-patch-risk --cr
 
 `--scan latest` selects the current repository's latest scan. Patch commands
 support `--json`, including literal-text and file inputs. Change
-the model with `--codex 'model="gpt-5.6-sol"'` or effort with `--effort high`.
+the model with `--model gpt-6.1-sol` or effort with `--effort high`.
+The existing `--codex 'model="..."'` syntax is also supported.
 Each finding gets its own saved Codex desktop task.
 
 Before patching, the CLI runs a command with the task's sandbox policy. If the

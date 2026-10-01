@@ -304,9 +304,23 @@ const MODEL_REASONING_EFFORTS = [
   "xhigh",
   "max",
 ] as const;
-type ScanReasoningEffort = (typeof MODEL_REASONING_EFFORTS)[number];
 const DEFAULT_SCAN_MODEL_CONFIGURATION =
   scanModelConfiguration(DEFAULT_CODEX_CONFIG);
+const MODEL_OPTIONS = modelOptions();
+type ModelCliOptions = z.infer<typeof MODEL_OPTIONS>;
+const MATCHING_MODEL_OPTIONS = modelOptions(
+  "Model for finding matching (default: Codex's configured model).",
+  "Matching reasoning effort (default: medium).",
+);
+const SKILL_CONFIG_OPTIONS = MODEL_OPTIONS.extend({
+  codex: z
+    .array(optionValue("--codex"))
+    .default([])
+    .describe(
+      'Repeat TOML model="gpt-5.6-terra", model_reasoning_effort="high", or analytics.enabled=false.',
+    ),
+});
+type SkillConfiguration = z.infer<typeof SKILL_CONFIG_OPTIONS>;
 const CODEX_OVERRIDE_DESCRIPTION =
   'Repeat TOML KEY=VALUE; e.g. model_reasoning_effort="high" or features.multi_agent_v2.max_concurrent_threads_per_session=4.';
 const PLUGIN_PATH_DESCRIPTION =
@@ -952,15 +966,19 @@ class FindingProgressPresenter {
   }
 }
 
-function effortOption() {
-  return z
-    .enum(MODEL_REASONING_EFFORTS, {
-      error: "--effort must be minimal, low, medium, high, xhigh, or max.",
-    })
-    .optional()
-    .describe(
-      `Model reasoning effort (default: ${DEFAULT_SCAN_MODEL_CONFIGURATION.reasoningEffort}).`,
-    );
+function modelOptions(
+  modelDescription = `Model to use (default: ${DEFAULT_SCAN_MODEL_CONFIGURATION.model}).`,
+  effortDescription = `Model reasoning effort (default: ${DEFAULT_SCAN_MODEL_CONFIGURATION.reasoningEffort}).`,
+) {
+  return z.object({
+    model: optionValue("--model").optional().describe(modelDescription),
+    effort: z
+      .enum(MODEL_REASONING_EFFORTS, {
+        error: "--effort must be minimal, low, medium, high, xhigh, or max.",
+      })
+      .optional()
+      .describe(effortDescription),
+  });
 }
 
 type DeepCliOptionName = Extract<
@@ -1123,8 +1141,7 @@ interface PatchRiskRequest {
   repository: string;
   base: string;
   files?: readonly string[];
-  codexOverrides: readonly string[];
-  effort: ScanReasoningEffort | undefined;
+  configuration: SkillConfiguration;
 }
 
 interface PatchRiskReport {
@@ -1902,8 +1919,10 @@ export async function main(
     );
     return result?.["scans"] as SavedScan[] | undefined;
   };
+  type MatchingCliOptions = ModelCliOptions & { force?: boolean };
   const runMatching = async (
     operation: (options: ScanComparisonOptions) => Promise<JsonObject>,
+    selection: MatchingCliOptions,
   ): Promise<JsonObject> => {
     const controller = new AbortController();
     let firstSignalAt = 0;
@@ -1933,6 +1952,10 @@ export async function main(
     let previousProgress = "";
     try {
       const result = await operation({
+        ...(selection.model === undefined ? {} : { model: selection.model }),
+        ...(selection.effort === undefined
+          ? {}
+          : { reasoningEffort: selection.effort }),
         environment: dependencies.environment,
         workingDirectory: dependencies.currentDirectory(),
         signal: controller.signal,
@@ -1969,7 +1992,7 @@ export async function main(
   const matchScanPair = async (
     beforeId: string,
     afterId: string,
-    force = false,
+    selection: MatchingCliOptions,
   ): Promise<JsonObject> =>
     runMatching(async (options) => {
       const { matchingCached, matchingInputs, ...comparison } =
@@ -1985,7 +2008,7 @@ export async function main(
           undefined,
           options.signal,
         );
-      if (matchingCached && !force) return comparison;
+      if (matchingCached && !selection.force) return comparison;
       const input = matchingInputs as JsonObject & ScanComparisonInput;
       const matching = await dependencies.matchFindings(input, options);
       options.signal?.throwIfAborted();
@@ -2001,7 +2024,7 @@ export async function main(
         JSON.stringify(matching),
         options.signal,
       );
-    });
+    }, selection);
   const presentHistory = (
     result: JsonObject | undefined,
     command: HistoryCommand,
@@ -2470,20 +2493,23 @@ export async function main(
           .boolean()
           .default(false)
           .describe("Recompute an existing semantic finding comparison."),
+        ...MATCHING_MODEL_OPTIONS.shape,
       }),
       output: z.record(z.string(), z.unknown()).optional(),
       async run({ args, format, options }) {
         if (options.all) {
           return presentHistory(
-            await runMatching((matchingOptions) =>
-              matchAllScans(dependencies, options.force, matchingOptions),
+            await runMatching(
+              (matchingOptions) =>
+                matchAllScans(dependencies, options.force, matchingOptions),
+              options,
             ),
             "match-all",
             format,
           );
         }
         return presentHistory(
-          await matchScanPair(args.beforeId!, args.afterId!, options.force),
+          await matchScanPair(args.beforeId!, args.afterId!, options),
           "compare",
           format,
         );
@@ -2505,8 +2531,9 @@ export async function main(
           .optional()
           .describe("Later saved scan identifier (default: latest completed)."),
       }),
+      options: MATCHING_MODEL_OPTIONS,
       output: z.record(z.string(), z.unknown()).optional(),
-      async run({ args, format }) {
+      async run({ args, format, options }) {
         let { beforeId, afterId } = args;
         if (beforeId === undefined) {
           const scans = await latestScans(2);
@@ -2518,7 +2545,7 @@ export async function main(
           if (afterId === undefined) return;
         }
         return presentHistory(
-          await matchScanPair(beforeId, afterId),
+          await matchScanPair(beforeId, afterId, options),
           "compare",
           format,
         );
@@ -3312,12 +3339,7 @@ export async function main(
           .enum(["auto", "chatgpt", "api-key"])
           .default("auto")
           .describe("Select ChatGPT, API-key, or automatic authentication."),
-        model: optionValue("--model")
-          .optional()
-          .describe(
-            `Model to use (default: ${DEFAULT_SCAN_MODEL_CONFIGURATION.model}).`,
-          ),
-        effort: effortOption(),
+        ...MODEL_OPTIONS.shape,
         provider: PROVIDER_OPTION.describe(
           "Inference provider for policy generation.",
         ),
@@ -3542,12 +3564,9 @@ export async function main(
             "Scan mode (default: standard); deep supports repository and path targets.",
           ),
           ...DEEP_SCAN_OPTION_SCHEMAS,
-          model: optionValue("--model")
-            .optional()
-            .describe(
-              `OpenAI model to use (default: ${DEFAULT_SCAN_MODEL_CONFIGURATION.model}).`,
-            ),
-          effort: effortOption(),
+          ...modelOptions(
+            `OpenAI model to use (default: ${DEFAULT_SCAN_MODEL_CONFIGURATION.model}).`,
+          ).shape,
           provider: PROVIDER_OPTION,
           outputDir: optionValue("--output-dir")
             .optional()
@@ -3850,14 +3869,10 @@ export async function main(
           .describe(
             "Local Git repository (default: current directory); analyzes committed HEAD.",
           ),
-        model: optionValue("--model")
-          .optional()
-          .describe(
-            "Model for owner suggestions (default: Codex Security model).",
-          ),
-        effort: effortOption().describe(
+        ...modelOptions(
+          "Model for owner suggestions (default: Codex Security model).",
           "Reasoning effort (default: Codex Security effort).",
-        ),
+        ).shape,
       }),
       output: z.record(z.string(), z.unknown()).optional(),
       async run({ args, options }) {
@@ -3944,12 +3959,10 @@ export async function main(
           .describe(
             "Classify only this finding ID; repeat to select deduplicated findings.",
           ),
-        model: optionValue("--model")
-          .optional()
-          .describe("Model for rubric classification."),
-        effort: effortOption().describe(
+        ...modelOptions(
+          "Model for rubric classification.",
           "Classification reasoning effort (default: medium).",
-        ),
+        ).shape,
       }),
       output: z.record(z.string(), z.unknown()).optional(),
       async run({ options }) {
@@ -4208,10 +4221,7 @@ export async function main(
           postScanPromptFile: optionValue("--post-scan-prompt-file")
             .optional()
             .describe("Run FILE after each scan, including failures."),
-          model: optionValue("--model")
-            .optional()
-            .describe("Model for planning and component scans."),
-          effort: effortOption(),
+          ...modelOptions("Model for planning and component scans.").shape,
           provider: PROVIDER_OPTION,
           maxCost: z
             .number()
@@ -4482,12 +4492,9 @@ export async function main(
         postScanPromptFile: optionValue("--post-scan-prompt-file")
           .optional()
           .describe("Run FILE after each scan, including failures."),
-        model: optionValue("--model")
-          .optional()
-          .describe(
-            `OpenAI model for each repository (default: ${DEFAULT_SCAN_MODEL_CONFIGURATION.model}).`,
-          ),
-        effort: effortOption(),
+        ...modelOptions(
+          `OpenAI model for each repository (default: ${DEFAULT_SCAN_MODEL_CONFIGURATION.model}).`,
+        ).shape,
         provider: PROVIDER_OPTION,
         maxAttempts: z
           .number()
@@ -4844,21 +4851,14 @@ export async function main(
           .enum(SCAN_AUTH_MODES)
           .default("auto")
           .describe("Credential source: auto, chatgpt, or api-key."),
-        effort: effortOption(),
-        codex: z
-          .array(optionValue("--codex"))
-          .default([])
-          .describe(
-            'Repeat TOML model="gpt-5.6-terra", model_reasoning_effort="high", or analytics.enabled=false.',
-          ),
+        ...SKILL_CONFIG_OPTIONS.shape,
       }),
       async run({ options }) {
         try {
           exitCode = await runSkill(
             "validation",
             positionals,
-            options.codex,
-            options.effort,
+            options,
             output,
             errorOutput,
             dependencies,
@@ -4887,7 +4887,7 @@ export async function main(
           .enum(SCAN_AUTH_MODES)
           .default("auto")
           .describe("Credential source: auto, chatgpt, or api-key."),
-        effort: effortOption(),
+        ...MODEL_OPTIONS.shape,
         scan: optionValue("--scan")
           .optional()
           .describe("Verify open findings from a saved scan."),
@@ -4906,12 +4906,7 @@ export async function main(
           .optional()
           .describe("JSON Linear issue filter for --linear-project."),
         linearApiKey: linearApiKeyOption(),
-        codex: z
-          .array(optionValue("--codex"))
-          .default([])
-          .describe(
-            'Repeat TOML model="gpt-5.6-terra", model_reasoning_effort="high", or analytics.enabled=false.',
-          ),
+        codex: SKILL_CONFIG_OPTIONS.shape.codex,
       }),
       output: z.record(z.string(), z.unknown()).optional(),
       async run({ format, options }) {
@@ -5017,8 +5012,7 @@ export async function main(
               exitCode = await runSkill(
                 "verify-fix",
                 selected === undefined ? [...positionals, ...imports] : [],
-                options.codex,
-                options.effort,
+                options,
                 verificationOutput,
                 errorOutput,
                 dependencies,
@@ -5108,7 +5102,7 @@ export async function main(
           .enum(SCAN_AUTH_MODES)
           .default("auto")
           .describe("Credential source: auto, chatgpt, or api-key."),
-        effort: effortOption(),
+        ...MODEL_OPTIONS.shape,
         externalSandbox: z
           .boolean()
           .default(false)
@@ -5145,12 +5139,7 @@ export async function main(
           .describe(
             "Resume publication of a saved patch branch without patching again.",
           ),
-        codex: z
-          .array(optionValue("--codex"))
-          .default([])
-          .describe(
-            'Repeat TOML model="gpt-5.6-terra", model_reasoning_effort="high", or analytics.enabled=false.',
-          ),
+        codex: SKILL_CONFIG_OPTIONS.shape.codex,
       }),
       output: z.record(z.string(), z.unknown()).optional(),
       async run({ format, options, error: commandError }) {
@@ -5177,6 +5166,7 @@ export async function main(
               linear ||
               options.linearFilter !== undefined ||
               options.linearApiKey !== undefined ||
+              options.model !== undefined ||
               options.effort !== undefined ||
               options.auth !== "auto" ||
               options.codex.length > 0
@@ -5244,8 +5234,7 @@ export async function main(
               (await snapshotPatchState(selected.repository, dependencies));
             const patches = await runFindingPatches(
               selected,
-              options.codex,
-              options.effort,
+              options,
               errorOutput,
               dependencies,
               {
@@ -5286,8 +5275,7 @@ export async function main(
                     repository: selected.repository,
                     base: patchRiskBase,
                     files,
-                    codexOverrides: options.codex,
-                    effort: options.effort,
+                    configuration: options,
                     auth: options.auth,
                   },
                   errorOutput,
@@ -5371,8 +5359,7 @@ export async function main(
           exitCode = await runSkill(
             "fix-finding",
             [...positionals, ...imports],
-            options.codex,
-            options.effort,
+            options,
             {
               write: (value) => {
                 report += value.toString();
@@ -5420,8 +5407,7 @@ export async function main(
                   environment,
                   base: patchGitBase!,
                   files,
-                  codexOverrides: options.codex,
-                  effort: options.effort,
+                  configuration: options,
                   auth: options.auth,
                 },
                 errorOutput,
@@ -7169,8 +7155,7 @@ async function assessPatchRisk(
     const status = await runSkill(
       "assess-patch-risk",
       [],
-      request.codexOverrides,
-      request.effort,
+      request.configuration,
       stdout,
       stderr,
       dependencies,
@@ -7241,8 +7226,7 @@ async function resolvePatchValidationPrompt(
 
 async function runFindingPatches(
   selected: SelectedFindings,
-  codexOverrides: readonly string[],
-  effort: ScanReasoningEffort | undefined,
+  configuration: SkillConfiguration,
   stderr: Writable,
   dependencies: CliDependencies,
   options: Omit<SkillRunOptions, "directory" | "findings"> = {},
@@ -7287,8 +7271,7 @@ async function runFindingPatches(
       status = await runSkill(
         "fix-finding",
         [],
-        codexOverrides,
-        effort,
+        configuration,
         stdout,
         patchErrors,
         dependencies,
@@ -7376,14 +7359,14 @@ async function runFindingPatches(
 async function runSkill(
   skill: "validation" | "fix-finding" | "verify-fix" | "assess-patch-risk",
   inputs: readonly (string | ImportedIssue)[],
-  codexOverrides: readonly string[],
-  effort: ScanReasoningEffort | undefined,
+  configuration: SkillConfiguration,
   stdout: Writable,
   stderr: Writable,
   dependencies: CliDependencies,
   options: SkillRunOptions = {},
 ): Promise<number> {
-  const overrides = parseCodexOverrides(codexOverrides, undefined, effort);
+  const { codex, model: selectedModel, effort } = configuration;
+  const overrides = parseCodexOverrides(codex, selectedModel, effort);
   if (
     Object.entries(overrides).some(
       ([key, value]) =>
@@ -7559,7 +7542,7 @@ async function runSkill(
       `model=${JSON.stringify(model)}`,
       "--config",
       `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`,
-      ...codexOverrides
+      ...codex
         .filter(
           (value) =>
             value.startsWith("analytics.") || value.startsWith("analytics="),
@@ -8928,13 +8911,15 @@ async function executeScan(
     try {
       patches = await runFindingPatches(
         selected,
-        [
-          `model=${JSON.stringify(effectiveModel)}`,
-          ...(patchAnalyticsOverride === undefined
-            ? []
-            : [patchAnalyticsOverride]),
-        ],
-        effectiveReasoningEffort as ScanReasoningEffort,
+        {
+          codex: [
+            `model=${JSON.stringify(effectiveModel)}`,
+            `model_reasoning_effort=${JSON.stringify(effectiveReasoningEffort)}`,
+            ...(patchAnalyticsOverride === undefined
+              ? []
+              : [patchAnalyticsOverride]),
+          ],
+        },
         errorOutput,
         dependencies,
         {
@@ -9470,7 +9455,7 @@ function resolveCliScope(
 export function parseCodexOverrides(
   values: readonly string[],
   model?: string,
-  effort?: ScanReasoningEffort,
+  effort?: ModelCliOptions["effort"],
   provider?: "openai" | "amazon-bedrock" | ExternalModelProvider,
   defaults?: JsonObject,
 ): JsonObject {

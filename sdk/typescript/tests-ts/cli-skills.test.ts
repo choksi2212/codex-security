@@ -141,6 +141,7 @@ describe("CLI skill commands", () => {
         expect(help.text()).toContain(
           "--effort <minimal|low|medium|high|xhigh|max>",
         );
+        expect(help.text()).toContain("--model <string>");
         expect(help.text()).toContain("--codex <array>");
         expect(help.text()).toContain('model="gpt-5.6-terra"');
         expect(help.text()).toContain('model_reasoning_effort="high"');
@@ -927,36 +928,50 @@ describe("CLI skill commands", () => {
     },
   );
 
-  test("selects reasoning effort directly for validation and patching", async () => {
-    for (const command of ["validate", "patch"] as const) {
-      let invocation: readonly string[] = [];
-      const stderr = capture();
-
-      expect(
-        await main(
-          [
-            command,
-            "a candidate finding",
-            "--effort",
-            "max",
-            "--codex",
-            'model="gpt-5.6-terra"',
-          ],
-          capture().stream,
-          stderr.stream,
-          dependencies({
-            onCodex: (args) => {
-              invocation = args;
-              return 0;
-            },
-          }),
-        ),
-      ).toBe(0);
-      expect(invocation).toContain('model="gpt-5.6-terra"');
-      expect(invocation).toContain('model_reasoning_effort="max"');
-      expect(stderr.text()).toBe(
-        command === "patch" ? "Patch applied. Files changed: 1.\n" : "",
-      );
+  test.each(["validate", "patch", "verify-fix"] as const)(
+    "selects the model and reasoning effort directly for %s",
+    async (command) => {
+      for (const model of ["gpt-6-astra", "gpt-6.1-sol"]) {
+        let invocation: readonly string[] = [];
+        const stderr = capture();
+        expect(
+          await main(
+            [
+              command,
+              "a candidate finding",
+              ...(model === "gpt-6-astra"
+                ? ["--model", model]
+                : [`--model=${model}`]),
+              "--effort",
+              "max",
+            ],
+            capture().stream,
+            stderr.stream,
+            dependencies({
+              onCodex: (args, output) => {
+                invocation = args;
+                if (command === "verify-fix") {
+                  output?.stdout.write(
+                    JSON.stringify({
+                      results: [
+                        {
+                          id: "finding-1",
+                          status: "fixed",
+                          evidence: "The fix is present.",
+                        },
+                      ],
+                    }),
+                  );
+                }
+                return 0;
+              },
+            }),
+          ),
+          stderr.text(),
+        ).toBe(0);
+        expect(invocation).toContain(`model="${model}"`);
+        expect(invocation).toContain('model_reasoning_effort="max"');
+      }
 
       for (const [options, message] of [
         [
@@ -967,10 +982,15 @@ describe("CLI skill commands", () => {
           ["--effort", "high", "--codex", 'model_reasoning_effort="medium"'],
           "--effort conflicts with --codex model_reasoning_effort",
         ],
+        [
+          ["--model", "gpt-6.1-sol", "--codex", 'model="gpt-6-astra"'],
+          "--model conflicts with --codex model",
+        ],
+        [["--model", "  "], "model must be a nonempty string"],
+        [["--model"], "Missing value for flag: --model"],
       ] as const) {
         let started = false;
         const invalidStderr = capture();
-
         expect(
           await main(
             [command, "a candidate finding", ...options],
@@ -987,8 +1007,8 @@ describe("CLI skill commands", () => {
         expect(invalidStderr.text()).toContain(message);
         expect(started).toBe(false);
       }
-    }
-  });
+    },
+  );
 
   test("rejects empty and non-file skill inputs before launching Codex", async () => {
     const directory = await mkdtemp(

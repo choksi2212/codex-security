@@ -687,6 +687,10 @@ describe("scan and patch workflow", () => {
       const outcome = await runWorkflow(
         [
           "patch",
+          "--model",
+          "gpt-6.1-sol",
+          "--effort",
+          "max",
           "--auth",
           "chatgpt",
           "--scan",
@@ -698,6 +702,8 @@ describe("scan and patch workflow", () => {
           result,
           onWorkbench: () => savedScan(result),
           onCodex: (args, output) => {
+            expect(args).toContain('model="gpt-6.1-sol"');
+            expect(args).toContain('model_reasoning_effort="max"');
             expect(output?.auth).toBe("chatgpt");
             completePatches(args, output);
             return 0;
@@ -705,13 +711,13 @@ describe("scan and patch workflow", () => {
         },
         {
           configure: (current) => {
-            Object.assign(current, {
-              assessPatchRisk: async (request: { auth?: string }) => {
-                expect(request.auth).toBe("chatgpt");
-                assessments += 1;
-                return patchRiskAssessment();
-              },
-            });
+            current.assessPatchRisk = async (request) => {
+              expect(request.auth).toBe("chatgpt");
+              expect(request.configuration.model).toBe("gpt-6.1-sol");
+              expect(request.configuration.effort).toBe("max");
+              assessments += 1;
+              return patchRiskAssessment();
+            };
           },
         },
       );
@@ -754,6 +760,10 @@ describe("scan and patch workflow", () => {
       const outcome = await runWorkflow(
         [
           "patch",
+          "--model",
+          "gpt-6.1-sol",
+          "--effort",
+          "max",
           "Synthetic issue",
           "--assess-patch-risk",
           "--codex",
@@ -762,6 +772,8 @@ describe("scan and patch workflow", () => {
         {
           currentDirectory: repository,
           onCodex: async (args, output) => {
+            expect(args).toContain('model="gpt-6.1-sol"');
+            expect(args).toContain('model_reasoning_effort="max"');
             expect(args).toContain("analytics.enabled=false");
             if (
               output?.appServer?.prompt.includes(
@@ -1215,6 +1227,8 @@ describe("scan and patch workflow", () => {
         "api-key",
         "--safety-identifier",
         "synthetic-user",
+        "--codex",
+        'model_reasoning_effort="ultra"',
         "--json",
       ],
       {
@@ -1229,6 +1243,7 @@ describe("scan and patch workflow", () => {
     );
     expect(attributed.exitCode).toBe(0);
     expect(invocation).toContain('safety_identifier="synthetic-user"');
+    expect(invocation).toContain('model_reasoning_effort="ultra"');
 
     for (const selection of [
       ["--provider", "fireworks"],
@@ -1610,6 +1625,7 @@ describe("scan and patch workflow", () => {
   test("rejects new patch inputs when resuming publication", async () => {
     for (const input of [
       ["--scan", "scan-1"],
+      ["--model", "gpt-6-astra"],
       ["--linear-issue", "SEC-123"],
       ["--create-pr"],
       ["--assess-patch-risk"],
