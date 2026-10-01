@@ -114,15 +114,13 @@ describe("CodexSecurity orchestration", () => {
           ...overrides.model_providers["synthetic.provider"],
           auth: { ...auth, cwd: profile ? join(home, "helpers") : home },
         };
-        expect(parseToml(captured!.configOverrides![0]!)).toEqual({
+        expect(captured!.config).toMatchObject({
+          model_provider: "synthetic.provider",
           model_providers: { "synthetic.provider": provider },
         });
-        if (profile) {
-          expect(captured?.config?.["profile"]).toBe("review");
-          expect(captured?.config?.["profiles"]).toEqual({
-            review: { model_provider: "synthetic.provider" },
-          });
-        } else {
+        expect(captured!.config).not.toHaveProperty("profile");
+        expect(captured!.config).not.toHaveProperty("profiles");
+        if (!profile) {
           const saved = parseToml(
             await readFile(join(runtimeHome, "config.toml"), "utf8"),
           );
@@ -222,15 +220,11 @@ describe("CodexSecurity orchestration", () => {
                   },
                 },
               });
-              const codexConfig = await readFile(
-                join(codexHome!, "config.toml"),
-                "utf8",
-              );
               expect(options.env?.["CODEX_SECURITY_SURFACE"]).toBe("sdk");
-              expect(codexConfig).not.toContain("model_reasoning_summary");
-              expect(codexConfig).not.toContain("show_raw_agent_reasoning");
-              expect(options.config).not.toHaveProperty("projects");
-              expect(options.config).not.toHaveProperty("permissions");
+              expect(options.config).toHaveProperty("projects");
+              expect(options.config).toHaveProperty(
+                "permissions.codex_security_scan",
+              );
               expect(options.config).toMatchObject({
                 default_permissions: "codex_security_scan",
                 allow_login_shell: false,

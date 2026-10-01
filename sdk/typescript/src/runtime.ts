@@ -2637,6 +2637,12 @@ export async function bootstrapPlugin(
       true,
     ))
   ) {
+    if (previous["pluginRoot"] !== root)
+      await writeFile(
+        installRecord,
+        JSON.stringify({ ...previous, pluginRoot: root }),
+        { mode: 0o600, signal: options.signal },
+      );
     return {
       pluginRoot: root,
       marketplaceRoot: marketplace,
@@ -2672,7 +2678,11 @@ export async function bootstrapPlugin(
   }
   await writeFile(
     installRecord,
-    JSON.stringify({ installedPath: installed["installedPath"], version }),
+    JSON.stringify({
+      installedPath: installed["installedPath"],
+      version,
+      pluginRoot: root,
+    }),
     { mode: 0o600, signal: options.signal },
   );
   return {
@@ -2683,6 +2693,31 @@ export async function bootstrapPlugin(
     name,
     version,
   };
+}
+
+/** Called under the credential-home lock; unchanged selections need no tree walk. */
+export async function restorePluginSelection(
+  codexHome: string,
+  plugin: PluginInstall,
+  options: Parameters<typeof bootstrapPlugin>[2],
+): Promise<void> {
+  if (plugin.marketplaceRoot !== join(codexHome, "sdk-marketplace")) return;
+  const installed: unknown = await readFile(
+    join(plugin.marketplaceRoot, "installed-plugin.json"),
+    "utf8",
+  )
+    .then((contents) => JSON.parse(contents) as unknown)
+    .catch((error: unknown) => {
+      if (nodeErrorCode(error) === "ENOENT" || error instanceof SyntaxError)
+        return null;
+      throw error;
+    });
+  if (
+    !isRecord(installed) ||
+    installed["pluginRoot"] !== plugin.pluginRoot ||
+    installed["version"] !== plugin.version
+  )
+    await bootstrapPlugin(codexHome, plugin.pluginRoot, options);
 }
 
 async function pluginContentsMatch(

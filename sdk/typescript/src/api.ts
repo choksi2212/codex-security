@@ -400,6 +400,7 @@ export type CodexSecuritySurface = "cli" | "sdk";
 
 interface CodexSecurityRuntimeOptions {
   surface: CodexSecuritySurface;
+  preparedExecution?: PreparedExecution;
 }
 
 interface ClientDependencies {
@@ -437,6 +438,7 @@ export class CodexSecurity {
 
   readonly #dependencies: ClientDependencies;
   readonly #surface: CodexSecuritySurface;
+  readonly #preparedExecution: PreparedExecution | undefined;
   readonly #loginHandles = new Set<CodexLoginHandle>();
   readonly #abortController = new AbortController();
   #activeOperation: Promise<unknown> | null = null;
@@ -461,6 +463,7 @@ export class CodexSecurity {
     this.config = structuredClone(config);
     this.#dependencies = dependencies;
     this.#surface = runtimeOptions.surface;
+    this.#preparedExecution = runtimeOptions.preparedExecution;
   }
 
   public async run(
@@ -1904,11 +1907,17 @@ export class CodexSecurity {
             },
             createCodex: async ({ config, configOverrides }) => {
               const matcherConfig = config as JsonObject;
-              const release = await lockExecutionConfiguration(
-                session,
-                session.sessionConfig,
-                signal,
-              );
+              const release =
+                session.runtimeConfig === undefined
+                  ? undefined
+                  : await lockExecutionConfiguration(
+                      session.runtime.codexHome,
+                      deepMerge(
+                        { ...session.runtimeConfig },
+                        session.sessionConfig,
+                      ),
+                      signal,
+                    );
               try {
                 matcherConfig["mcp_servers"] = await disabledMcpServers(
                   session.source.command,
@@ -2383,6 +2392,15 @@ export class CodexSecurity {
     temporaryRoot?: string,
     keepCredentialLock = false,
   ): Promise<PreparedExecution> {
+    if (this.#preparedExecution !== undefined) {
+      const prepared = this.#preparedExecution;
+      return {
+        ...prepared,
+        sessionConfig: structuredClone(prepared.sessionConfig),
+        effectiveConfig: structuredClone(prepared.effectiveConfig),
+        releaseCredentialHome: null,
+      };
+    }
     let releaseCredentialHome: (() => Promise<void>) | null = null;
     const checkOpen = (): void => {
       this.#requireOpen();
@@ -3383,25 +3401,15 @@ export function scanRuntimeCodexConfig(
   inheritedPermissions?: { filesystem: JsonObject; network: JsonObject },
 ): JsonObject {
   const approvalPolicy = scanApprovalPolicy(config);
-  const hardened = structuredClone(config);
+  const hardened = resolveCodexProfile(config);
   delete hardened["sandbox_mode"];
   delete hardened["approvals_reviewer"];
-  const profiles = hardened["profiles"];
-  if (isRecord(profiles)) {
-    for (const profile of Object.values(profiles)) {
-      if (!isRecord(profile)) continue;
-      delete profile["approval_policy"];
-      delete profile["approvals_reviewer"];
-      delete profile["default_permissions"];
-      delete profile["permissions"];
-      delete profile["sandbox_mode"];
-    }
-  }
-  const configuredPermissions = isRecord(hardened["permissions"])
-    ? hardened["permissions"]
+  const configuredPermissions = isRecord(config["permissions"])
+    ? structuredClone(config["permissions"])
     : {};
   return {
     ...hardened,
+    model_provider: hardened["model_provider"] ?? "openai",
     approval_policy: approvalPolicy,
     approvals_reviewer: "auto_review",
     allow_login_shell: false,
@@ -3467,9 +3475,6 @@ function requirePolicyConfigKeys(config: JsonObject): void {
 function policyCodexConfig(config: JsonObject): JsonObject {
   const resolved = resolveCodexProfile(config);
   requirePolicyConfigKeys(resolved);
-  // The selected provider is already written as TOML. The SDK cannot quote
-  // provider names when it flattens this table into command-line overrides.
-  delete resolved["model_providers"];
   const features = isRecord(resolved["features"]) ? resolved["features"] : {};
   return {
     ...resolved,
@@ -3566,6 +3571,7 @@ export function scanPreflightCodexConfig(config: JsonObject): JsonObject {
       "model_reasoning_summary",
       "model_provider",
       "service_tier",
+      "cyber_access_program",
     ]) {
       const value = source[key];
       if (safeString(value)) result[key] = value;
