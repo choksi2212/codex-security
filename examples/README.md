@@ -22,6 +22,13 @@ Examples and templates for using Codex Security:
   validation script against a deliberately vulnerable API using synthetic data.
   Follow the demo's setup instructions, and do not deploy the example app.
 
+- [Invoice Desk sample](invoice-desk/README.md): a standalone invoice web app with
+  ten seeded finding scenarios, synthetic data, and an HTTP QA suite. It runs on
+  Node.js without dependencies or external services. Sample documentation and
+  expected findings stay outside the application directory used for scanning.
+  Its [PR workflow](invoice-desk/README.md#pull-request-scans-with-openai) runs the
+  CLI with OpenAI inference and saves finding counts and reports for QA.
+
 - [Azure Pipelines with Amazon Bedrock](azure-pipelines/README.md): centrally run
   manual full or committed-diff scans against Azure Repos, with OIDC credentials,
   report artifacts, and optional native SARIF publishing.

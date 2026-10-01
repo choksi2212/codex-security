@@ -92,3 +92,13 @@ is installed outside the checkout before checkout; AWS credentials are scoped
 to the scan step, and no `GH_TOKEN` or `GITHUB_TOKEN` is passed to the scanner.
 Keep any additional scanner configuration maintainer-controlled. Only scan code
 you are authorized to submit to the configured inference provider.
+
+## OpenAI inference on a sample application
+
+The repository's [Invoice Desk workflow](../../.github/workflows/invoice-desk.yml)
+adapts this example to `--provider openai --auth api-key` using an
+`OPENAI_API_KEY` Actions secret. It scans a standalone copy of the synthetic app
+on every same-repository pull request, shows counts and coverage in the Actions
+summary, and saves reports plus SARIF as artifacts. It does not upload the
+sample's intentional vulnerabilities to Code Scanning or post PR comments.
+See the [setup and reporting guide](../invoice-desk/README.md#pull-request-scans-with-openai).
