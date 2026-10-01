@@ -13,6 +13,20 @@ function strings(value) {
   return [];
 }
 
+function matchesLocation(location, expected) {
+  const end = location.endLine ?? location.startLine;
+  return (
+    location.path === expected.path &&
+    !supportingLocation(location) &&
+    Number.isInteger(location.startLine) &&
+    Number.isInteger(end) &&
+    location.startLine > 0 &&
+    location.startLine <= expected.line &&
+    end >= expected.line &&
+    end <= expected.lineCount
+  );
+}
+
 function matches(finding, expected) {
   return (
     secretCategory.test(finding.taxonomy?.category ?? "") &&
@@ -22,19 +36,7 @@ function matches(finding, expected) {
         (["CWE-200", "CWE-540"].includes(cwe) &&
           explicitSecretCategory.test(finding.taxonomy.category)),
     ) &&
-    finding.locations?.some((location) => {
-      const end = location.endLine ?? location.startLine;
-      return (
-        location.path === expected.path &&
-        !supportingLocation(location) &&
-        Number.isInteger(location.startLine) &&
-        Number.isInteger(end) &&
-        location.startLine > 0 &&
-        location.startLine <= expected.line &&
-        end >= expected.line &&
-        end <= expected.lineCount
-      );
-    })
+    finding.locations?.some((location) => matchesLocation(location, expected))
   );
 }
 
@@ -48,30 +50,44 @@ export function gradeResult(result, fixture) {
     found: findings.some((finding) => matches(finding, expected)),
   }));
   const falsePositives = findings.flatMap((finding, index) => {
-    const negativeLocations = (finding.locations ?? [])
+    const unexpectedLocations = (finding.locations ?? [])
       .filter(
         (location) =>
-          fixture.negatives.includes(location.path) &&
-          !supportingLocation(location),
+          !supportingLocation(location) &&
+          !fixture.positives.some((expected) =>
+            matchesLocation(location, expected),
+          ),
       )
       .map((location) => location.path);
-    if (negativeLocations.length) return [{ index, negativeLocations }];
+    if (unexpectedLocations.length) return [{ index, unexpectedLocations }];
     if (!fixture.positives.some((expected) => matches(finding, expected))) {
       return [{ index, reason: "no expected secret location and taxonomy" }];
     }
     return [];
   });
   const outputStrings = strings(result);
-  const leakedValueCount = fixture.secretValues.filter((value) =>
-    outputStrings.some((text) => text.includes(value)),
-  ).length;
+  const leakedValueCount = fixture.secretValues.filter((value) => {
+    // Sixteen base64 characters identify 96 bits of generated fixture material,
+    // including excerpts of a credential with its prefix or suffix masked.
+    for (let offset = 0; offset <= value.length - 16; offset++) {
+      const fragment = value.slice(offset, offset + 16);
+      if (outputStrings.some((text) => text.includes(fragment))) return true;
+    }
+    return false;
+  }).length;
   const found = cases.filter((entry) => entry.found).length;
   if (found !== cases.length) errors.push("missing retained secret findings");
   if (falsePositives.length)
     errors.push("false positives or incorrect taxonomy/locations");
   if (leakedValueCount)
     errors.push("final result reproduces credential material");
-  if (result?.coverage?.completeness !== "complete")
+  if (
+    result?.coverage?.completeness !== "complete" ||
+    result.coverage.deferred?.length ||
+    result.coverage.surfaces?.some(
+      (surface) => surface.disposition === "needs_follow_up",
+    )
+  )
     errors.push("incomplete coverage");
   return {
     passed: errors.length === 0,

@@ -22,7 +22,12 @@ function retainedResult(fixture) {
       ],
       codeEvidence: [{ code: "credential = [REDACTED]" }],
     })),
-    coverage: { completeness: "complete", deferred: [], openQuestions: [] },
+    coverage: {
+      completeness: "complete",
+      surfaces: [],
+      deferred: [],
+      openQuestions: [],
+    },
   };
 }
 
@@ -151,6 +156,31 @@ test("benign supporting context does not become a false positive", () => {
   assert.equal(gradeResult(result, fixture).passed, true);
 });
 
+for (const [name, location] of [
+  ["unrelated source file", { path: "README.md", startLine: 1 }],
+  ["invented source file", { path: "src/absent.py", startLine: 1 }],
+  ["wrong line in a positive file", { path: "src/retired.py", startLine: 1 }],
+  ["negative control", { path: "src/runtime_config.py", startLine: 1 }],
+]) {
+  test(`rejects an additional non-supporting location at ${name}`, () => {
+    const fixture = createFixture();
+    const result = retainedResult(fixture);
+    result.findings[0].locations.push({ ...location, role: "root_control" });
+    const report = gradeResult(result, fixture);
+    assert.equal(report.recall, 1);
+    assert.equal(report.falsePositiveCount, 1);
+    assert.equal(report.passed, false);
+  });
+}
+
+test("multiple expected exposures can share a finding", () => {
+  const fixture = createFixture();
+  const result = retainedResult(fixture);
+  const unused = result.findings.splice(1, 1)[0];
+  result.findings[0].locations.push(...unused.locations);
+  assert.equal(gradeResult(result, fixture).passed, true);
+});
+
 test("a supporting citation cannot satisfy an independently missed exposure", () => {
   const fixture = createFixture();
   const result = retainedResult(fixture);
@@ -181,11 +211,92 @@ test("detects token and multiline private-key leakage anywhere in the result", (
   }
 });
 
+for (const [name, secretIndex] of [
+  ["token", 0],
+  ["private key", 5],
+]) {
+  for (const [part, excerpt] of [
+    ["prefix", (value) => `${value.slice(0, 20)}...[REDACTED]`],
+    ["suffix", (value) => `[REDACTED]...${value.slice(-20)}`],
+    ["middle", (value) => `[REDACTED]${value.slice(8, 24)}[REDACTED]`],
+  ]) {
+    test(`detects a reproduced ${name} ${part}`, () => {
+      const fixture = createFixture();
+      const result = retainedResult(fixture);
+      const partialValue = excerpt(fixture.secretValues[secretIndex]);
+      result.findings[0].codeEvidence[0].code = partialValue;
+      const report = gradeResult(result, fixture);
+      assert.equal(report.passed, false);
+      assert.equal(report.leakedValueCount, 1);
+      assert.equal(JSON.stringify(report).includes(partialValue), false);
+    });
+  }
+}
+
+test("public keys and private-key format headers do not count as secret material", () => {
+  const fixture = createFixture();
+  const result = retainedResult(fixture);
+  const keyHeader = fixture.files["src/signing.mjs"]
+    .split("\n")[2]
+    .slice(0, 22);
+  result.findings[0].codeEvidence[0].code = [
+    "-----BEGIN PRIVATE KEY-----",
+    `${keyHeader}[REDACTED]`,
+    "-----END PRIVATE KEY-----",
+    fixture.files["config/public.pem"],
+  ].join("\n");
+  assert.equal(gradeResult(result, fixture).passed, true);
+});
+
 test("incomplete coverage cannot pass even with all positive findings", () => {
   const fixture = createFixture();
   const result = retainedResult(fixture);
   result.coverage.completeness = "partial";
   assert.equal(gradeResult(result, fixture).passed, false);
+});
+
+for (const [name, mutate] of [
+  [
+    "deferred work",
+    (coverage) => {
+      coverage.deferred.push({
+        reason: "source review remains unfinished",
+        paths: ["README.md"],
+      });
+    },
+  ],
+  [
+    "surface needing follow-up",
+    (coverage) => {
+      coverage.surfaces.push({
+        label: "configuration",
+        disposition: "needs_follow_up",
+        notes: "source review remains unfinished",
+      });
+    },
+  ],
+]) {
+  test(`complete coverage cannot pass with ${name}`, () => {
+    const fixture = createFixture();
+    const result = retainedResult(fixture);
+    mutate(result.coverage);
+    const report = gradeResult(result, fixture);
+    assert.equal(report.recall, 1);
+    assert.equal(report.passed, false);
+    assert.deepEqual(report.errors, ["incomplete coverage"]);
+  });
+}
+
+test("complete coverage permits reviewed surfaces and nonblocking questions", () => {
+  const fixture = createFixture();
+  const result = retainedResult(fixture);
+  result.coverage.surfaces.push({
+    label: "configuration",
+    disposition: "reported",
+    notes: "source review complete",
+  });
+  result.coverage.openQuestions.push("Have the embedded credentials expired?");
+  assert.equal(gradeResult(result, fixture).passed, true);
 });
 
 test("stages production prompt unchanged and no labels; grades only the final SDK response", async (t) => {
@@ -254,10 +365,16 @@ test("stages production prompt unchanged and no labels; grades only the final SD
 test("named read-only profile excludes gold and credentials without a legacy sandbox override", () => {
   const codexPath = "/tmp/native-package/bin/codex";
   const settings = codexSettings("/tmp/eval-home", codexPath, {
-    TEST_VALUE: "present",
+    PATH: "/usr/bin",
+    DATABASE_URL: "synthetic-private-dsn",
+    CODEX_API_KEY: "synthetic-model-auth",
+    CODEX_HOME: "/tmp/ambient-home",
+    CODEX_SQLITE_HOME: "/tmp/ambient-state",
+    CODEX_CLI_PATH: "/tmp/ambient-codex",
   });
   assert.deepEqual(settings.env, {
-    TEST_VALUE: "present",
+    PATH: "/usr/bin",
+    CODEX_API_KEY: "synthetic-model-auth",
     CODEX_HOME: "/tmp/eval-home",
     CODEX_SQLITE_HOME: "/tmp/eval-home",
     CODEX_CLI_PATH: codexPath,
@@ -266,6 +383,12 @@ test("named read-only profile excludes gold and credentials without a legacy san
   assert.equal(settings.config.default_permissions, "discovery_eval");
   assert.equal(settings.config.features.plugins, false);
   assert.equal(settings.config.features.memories, false);
+  assert.equal(settings.config.features.shell_snapshot, false);
+  assert.equal(settings.config.allow_login_shell, false);
+  assert.deepEqual(settings.config.shell_environment_policy, {
+    inherit: "core",
+    ignore_default_excludes: false,
+  });
   assert.equal(settings.configOverrides.length, 1);
   assert.match(
     settings.configOverrides[0],

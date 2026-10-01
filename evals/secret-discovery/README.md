@@ -18,9 +18,11 @@ Generic disclosure CWEs (`CWE-200`, `CWE-540`) also count when the category
 explicitly identifies credential, secret, hardcoding, or private-key exposure.
 Mentions in resolved questions, intermediate responses, or deferred coverage do
 not count.
-The grader also rejects findings against the negative controls, incomplete
-coverage, and credential values reproduced anywhere in the final semantic
-result. Finding counts alone cannot pass the eval. Explicitly labeled supporting
+The grader also rejects unrelated non-supporting locations, incomplete coverage
+(including deferred work or surfaces needing follow-up), and credential values
+or fragments of at least 16 characters reproduced anywhere in the final semantic
+result. Fixed private-key encoding headers do not count as secret material.
+Finding counts alone cannot pass the eval. Explicitly labeled supporting
 locations do not turn benign context into a false positive.
 
 ## Run
@@ -39,8 +41,11 @@ result does not expose the selected model. The run consumes model usage
 and uses the caller's existing file-based Codex login or authentication
 environment. It creates a temporary private Codex home, copies existing login
 state with the SDK's authentication helper, and removes that home after the
-run. It does not print authentication data or put it in the source fixture or
-reports.
+run. Only runtime, proxy/certificate, and model-authentication environment
+variables reach the Codex process; shell tools inherit Codex's core environment
+with default credential exclusions. Login shells and shell snapshots are
+disabled. It does not print authentication data or put it in the source fixture
+or reports.
 
 Source inspection is offline and read-only. A named, deny-by-default filesystem
 profile allows only the generated repository, staged production references,

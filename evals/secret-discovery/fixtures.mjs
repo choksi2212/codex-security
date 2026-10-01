@@ -146,7 +146,10 @@ export function createFixture() {
       ...Object.values(values),
       ...privateKey
         .split("\n")
-        .filter((line) => line && !line.startsWith("---")),
+        .filter((line) => line && !line.startsWith("---"))
+        // The Ed25519 PKCS#8 body starts with 16 fixed DER header bytes.
+        // Skip 22 base64 characters so matching uses only random key material.
+        .map((line) => line.slice(22)),
     ],
   };
 }

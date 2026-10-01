@@ -143,17 +143,55 @@ export function threadSettings(prepared, model) {
 
 export function codexSettings(home, codexPath, environment = process.env) {
   const nativePackage = dirname(dirname(codexPath));
+  // Keep unrelated service credentials out of the eval process entirely.
+  const inherited = new Set([
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "SYSTEMROOT",
+    "COMSPEC",
+    "PATHEXT",
+    "TMP",
+    "TEMP",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "CODEX_API_KEY",
+    "OPENAI_API_KEY",
+  ]);
   return {
     codexPathOverride: codexPath,
     env: {
-      ...environment,
+      ...Object.fromEntries(
+        Object.entries(environment).filter(
+          ([name, value]) =>
+            value !== undefined && inherited.has(name.toUpperCase()),
+        ),
+      ),
       CODEX_HOME: home,
       CODEX_SQLITE_HOME: home,
       CODEX_CLI_PATH: codexPath,
     },
     config: {
       default_permissions: "discovery_eval",
-      features: { memories: false, plugins: false, multi_agent: false },
+      allow_login_shell: false,
+      shell_environment_policy: {
+        inherit: "core",
+        ignore_default_excludes: false,
+      },
+      features: {
+        memories: false,
+        plugins: false,
+        multi_agent: false,
+        shell_snapshot: false,
+      },
     },
     // Raw TOML preserves literal filesystem keys that SDK object flattening loses.
     // Everything outside the source, references, and minimal runtime is unreadable.
