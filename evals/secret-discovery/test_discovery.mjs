@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { parse } from "../../sdk/typescript/node_modules/smol-toml/dist/index.js";
 import { createFixture } from "./fixtures.mjs";
@@ -570,14 +570,19 @@ test("named read-only profile excludes gold and credentials without a legacy san
       ignore_default_excludes: false,
     },
   );
-  const profileOverride = settings.configOverrides.find((value) =>
-    value.startsWith("permissions.discovery_eval="),
+  assert.deepEqual(
+    { ...config.permissions.discovery_eval.filesystem },
+    {
+      ":minimal": "read",
+      ":workspace_roots": "read",
+      [dirname(dirname(codexPath))]: "read",
+      [resolve("/tmp/eval-home")]: "deny",
+    },
   );
-  assert.match(profileOverride, /":minimal"="read",":workspace_roots"="read"/);
-  assert.match(profileOverride, /"\/tmp\/eval-home"="deny"/);
-  assert.match(profileOverride, /"\/tmp\/native-package"="read"/);
-  assert.match(profileOverride, /network=\{enabled=false\}/);
-  assert.doesNotMatch(profileOverride, /":root"="read"/);
+  assert.deepEqual(
+    { ...config.permissions.discovery_eval.network },
+    { enabled: false },
+  );
   assert.equal(
     threadSettings({ repo: "/tmp/repo", runtime: "/tmp/runtime" }).sandboxMode,
     undefined,
