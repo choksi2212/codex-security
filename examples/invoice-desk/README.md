@@ -8,6 +8,8 @@ The application has **ten seeded finding scenarios**. It looks and behaves like
 an ordinary invoice application, with no vulnerability labels, answer keys,
 sample banners, or test-mode branches in its application code. This README and
 the nested [QA guide](qa/README.md) explain the sample and its expected findings.
+The [threat model](SECURITY.md) describes the app's assets, trust boundaries, and
+intended security properties. It also stays outside the standalone scanner input.
 
 ## Start
 
@@ -63,11 +65,11 @@ API usage, and newer runs cancel older runs for the same pull request.
 
 The workflow installs the CLI outside the checkout, copies only `app/` into a
 fresh directory, and starts the scanner from that directory with separate state.
-The sample documentation, tests, answer key, and previous reports are not scan
-input. The API key is available only in the scan step; no GitHub token is passed
-to the scanner. Only trusted contributors who can push repository branches should
-receive this secret; use a protected GitHub environment if additional approval
-is required.
+The sample documentation, threat model, tests, answer key, and previous reports
+are not scan input. The API key is available only in the scan step; no GitHub token
+is passed to the scanner. Only trusted contributors who can push repository
+branches should receive this secret; use a protected GitHub environment if
+additional approval is required.
 
 The Actions summary shows the total finding count, severity counts, and coverage.
 A seven-day artifact contains the Markdown report, findings and coverage JSON,
@@ -90,6 +92,7 @@ manifest are siblings outside that directory:
 ```text
 invoice-desk/
   README.md                   Sample instructions
+  SECURITY.md                 Threat model and security assumptions
   app/                        Standalone scanner input
     README.md                 Ordinary product and runtime documentation
     server.mjs
@@ -102,9 +105,9 @@ invoice-desk/
 
 For an independent discovery run, copy only `app/` into a fresh directory outside
 this checkout and select that directory as the scan target. Keep this README,
-the QA directory, and prior reports outside the scanner's input. This also avoids
-inheriting the parent repository's instructions or exposing the answer key by
-walking to a neighboring directory inside the checkout.
+SECURITY.md, the QA directory, and prior reports outside the scanner's input. This
+also avoids inheriting the parent repository's instructions or exposing the answer
+key by walking to a neighboring directory inside the checkout.
 
 The app has no dependency on its surrounding example directory, and runs from
 the copied directory. Its own README describes the product and intended roles,
