@@ -1,17 +1,25 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { CodexOptions } from "@openai/codex-sdk";
 import { afterEach, describe, expect, test } from "bun:test";
 import { parse as parseToml } from "smol-toml";
 import { initialCredentialsAvailable } from "../src/api.js";
-import { setCodexSecurityCredentialLogout } from "../src/runtime.js";
+import {
+  resolveCodexCommand,
+  setCodexSecurityCredentialLogout,
+} from "../src/runtime.js";
 import { PLUGIN_ROOT } from "./plugin-root.js";
-import { shellEnvironmentReference, TestClient } from "./support/api-client.js";
+import {
+  mockWorkbench,
+  shellEnvironmentReference,
+  TestClient,
+} from "./support/api-client.js";
 import {
   completedEvents,
+  copyPluginVariant,
   createApiTestFixtures,
   preparedRuntime,
 } from "./support/api-events.js";
@@ -21,6 +29,89 @@ const { cleanup, copyCompletedScan, temporaryDirectory } =
 afterEach(cleanup);
 
 describe("CodexSecurity orchestration", () => {
+  test("reused managed clients restore their selected plugin before preparation and native startup", async () => {
+    const root = await temporaryDirectory();
+    const repository = join(root, "repository");
+    const state = join(root, "state");
+    await mkdir(repository);
+    const selections = await Promise.all(
+      ["selected-a", "selected-b"].map((name) => copyPluginVariant(root, name)),
+    );
+    const prepared: string[] = [];
+    const launched: string[] = [];
+    let outputs = 0;
+    const clients = selections.map(
+      (pluginPath) =>
+        new TestClient(
+          { pluginPath },
+          {
+            environment: {
+              CODEX_SECURITY_STATE_DIR: state,
+              OPENAI_API_KEY: "synthetic-plugin-selection-key",
+            },
+            resolvePluginPython: async () => {
+              const record = JSON.parse(
+                await readFile(
+                  join(
+                    state,
+                    "codex-home",
+                    "sdk-marketplace",
+                    "installed-plugin.json",
+                  ),
+                  "utf8",
+                ),
+              );
+              prepared.push(record.pluginRoot);
+              return process.execPath;
+            },
+            prepareOutputDir: async () => {
+              const directory = join(root, `scan-${++outputs}`);
+              await mkdir(directory, { mode: 0o700 });
+              return directory;
+            },
+            repositoryRevision: async () => "deadbeef",
+            createCodex: (options) => ({
+              startThread: () => ({
+                id: null,
+                async runStreamed() {
+                  const servers = JSON.parse(
+                    execFileSync(
+                      resolveCodexCommand({}).command,
+                      ["mcp", "list", "--json"],
+                      {
+                        env: options.env,
+                        cwd: root,
+                        encoding: "utf8",
+                      },
+                    ),
+                  ) as { name: string; transport: { args: string[] } }[];
+                  launched.push(
+                    servers.find(({ name }) => name === "synthetic-plugin")!
+                      .transport.args[0]!,
+                  );
+                  throw new Error("synthetic plugin selection observed");
+                },
+              }),
+            }),
+          },
+        ),
+    );
+    try {
+      for (const client of [clients[0]!, clients[1]!, clients[0]!])
+        await expect(client.run(repository)).rejects.toThrow(
+          "synthetic plugin selection observed",
+        );
+      expect(prepared).toEqual([
+        selections[0]!,
+        selections[1]!,
+        selections[0]!,
+      ]);
+      expect(launched).toEqual(["selected-a", "selected-b", "selected-a"]);
+    } finally {
+      await Promise.all(clients.map((client) => client.close()));
+    }
+  });
+
   test.each(["direct", "profile"])(
     "runs native command authentication without importing credentials (%s)",
     async (selection) => {
@@ -378,7 +469,78 @@ describe("CodexSecurity orchestration", () => {
     expect(runtimeHomes).toEqual([credentialHome, credentialHome]);
   });
 
-  test("runs parallel ChatGPT scans with isolated mutable configuration", async () => {
+  test.each(["error", "empty", "cancel"])(
+    "releases native startup ownership before the first event on %s",
+    async (failure) => {
+      const root = await temporaryDirectory();
+      const repository = join(root, "repository");
+      const ambientHome = join(root, "ambient-codex-home");
+      const stateDirectory = join(root, "state");
+      const credentialHome = join(stateDirectory, "codex-home");
+      const lock = join(credentialHome, ".codex-security-scan.lock");
+      await mkdir(repository);
+      await mkdir(ambientHome);
+      await writeFile(join(ambientHome, "auth.json"), "{}\n");
+      let startups = 0;
+      for (const index of [0, 1]) {
+        const controller = new AbortController();
+        const startupError = new Error("synthetic startup failure");
+        const client = new TestClient(
+          { pluginPath: PLUGIN_ROOT },
+          {
+            environment: {
+              CODEX_HOME: ambientHome,
+              CODEX_SECURITY_STATE_DIR: stateDirectory,
+            },
+            resolvePluginPython: async () => "/managed/python",
+            prepareOutputDir: async () => {
+              const directory = join(root, `scan-${index}`);
+              await mkdir(directory, { mode: 0o700 });
+              return directory;
+            },
+            repositoryRevision: async () => "deadbeef",
+            createCodex: () => ({
+              startThread: () => ({
+                id: null,
+                async runStreamed() {
+                  expect(existsSync(lock)).toBe(true);
+                  startups += 1;
+                  if (index === 0 && failure === "error") throw startupError;
+                  return {
+                    events: (async function* () {
+                      await Promise.resolve();
+                      if (index === 1)
+                        throw new Error("next native startup reached");
+                      if (failure === "empty") return;
+                      controller.abort(startupError);
+                      throw startupError;
+                    })(),
+                  };
+                },
+              }),
+            }),
+          },
+        );
+        try {
+          const run = client.run(repository, { signal: controller.signal });
+          if (index === 1)
+            await expect(run).rejects.toThrow("next native startup reached");
+          else if (failure === "error")
+            await expect(run).rejects.toBe(startupError);
+          else if (failure === "cancel") {
+            const error = await run.catch((error: unknown) => error);
+            expect(error).toMatchObject({ cause: startupError });
+          } else await expect(run).rejects.toThrow();
+          expect(existsSync(lock)).toBe(false);
+        } finally {
+          await client.close();
+        }
+      }
+      expect(startups).toBe(2);
+    },
+  );
+
+  test("runs parallel ChatGPT scans with isolated ordinary child settings", async () => {
     const root = await temporaryDirectory();
     const repository = join(root, "repository");
     const ambientHome = join(root, "ambient-codex-home");
@@ -387,17 +549,25 @@ describe("CodexSecurity orchestration", () => {
     await mkdir(repository);
     await mkdir(ambientHome);
     await writeFile(join(ambientHome, "auth.json"), "{}\n");
+    const controllers = [new AbortController(), new AbortController()];
+    const launches: Array<{
+      index: number;
+      home: string | undefined;
+      directory: string | undefined;
+      before: CodexOptions["config"];
+      after: CodexOptions["config"];
+    }> = [];
+    const recipes: Array<{ index: number; mode: string; deepScan?: unknown }> =
+      [];
     let scansStarted = 0;
-    const deepScanConfigPaths = new Set<string>();
     let releaseScans!: () => void;
     const concurrentScans = new Promise<void>((resolve) => {
       releaseScans = resolve;
     });
-
     const clients = await Promise.all(
       [0, 1].map(async (index) => {
         const scanDir = join(root, `parallel-scan-${index}`);
-        await mkdir(scanDir, { mode: 0o700 });
+        let registrations = 0;
         return new TestClient(
           {
             pluginPath: PLUGIN_ROOT,
@@ -411,89 +581,112 @@ describe("CodexSecurity orchestration", () => {
               CODEX_SECURITY_STATE_DIR: stateDirectory,
             },
             resolvePluginPython: async () => "/managed/python",
-            prepareOutputDir: async () => scanDir,
-            repositoryRevision: async () => "deadbeef",
-            createCodex: (options: CodexOptions) => {
-              expect(options.env?.["CODEX_HOME"]).toBe(credentialHome);
-              const expectedModel =
-                index === 0 ? "gpt-5.6-sol" : "gpt-5.6-terra";
-              expect(options.config?.["model"]).toBe(expectedModel);
-              const deepScanConfigPath =
-                options.env?.["CODEX_SECURITY_DEEP_SCAN_CONFIG_PATH"];
-              expect(typeof deepScanConfigPath).toBe("string");
-              deepScanConfigPaths.add(deepScanConfigPath!);
-              return {
-                startThread: () => ({
-                  id: null,
-                  async runStreamed() {
-                    if (++scansStarted === 2) {
-                      expect(
-                        existsSync(
-                          join(credentialHome, ".codex-security-scan.lock"),
-                        ),
-                      ).toBe(false);
-                      releaseScans();
-                    }
-                    const credentialConfig = parseToml(
-                      await readFile(
-                        join(credentialHome, "config.toml"),
-                        "utf8",
-                      ),
-                    );
-                    expect(credentialConfig["model"]).toBeUndefined();
-                    const before = parseToml(
-                      await readFile(deepScanConfigPath!, "utf8"),
-                    );
-                    expect(before["deep_scan"]).toMatchObject({
-                      workers: index + 2,
-                    });
-                    await concurrentScans;
-                    const after = parseToml(
-                      await readFile(deepScanConfigPath!, "utf8"),
-                    );
-                    expect(after["deep_scan"]).toMatchObject({
-                      workers: index + 2,
-                    });
-                    throw new Error("parallel managed scan reached");
-                  },
-                }),
-              };
+            prepareOutputDir: async (requested) => {
+              const directory = requested ?? scanDir;
+              await mkdir(directory, { recursive: true, mode: 0o700 });
+              return directory;
             },
+            repositoryRevision: async () => "deadbeef",
+            runWorkbench: async (_options, args, input) => {
+              if (args[0] === "list-scans") return { scans: [] };
+              if (args[0] === "get-scan")
+                return { scan: { progress: { status: "running" } } };
+              const result = mockWorkbench(args, input);
+              if (args[0] === "get-scan-feedback")
+                result["scanId"] = args[args.indexOf("--scan-id") + 1]!;
+              if (args[0] === "register-cli-scan") {
+                recipes.push({ index, ...JSON.parse(input!).recipe });
+                result["scanId"] = `scan_parallel_${index}_${++registrations}`;
+              }
+              return result;
+            },
+            createCodex: (options: CodexOptions) => ({
+              startThread: () => ({
+                id: null,
+                async runStreamed() {
+                  const before = structuredClone(options.config);
+                  return {
+                    events: (async function* () {
+                      yield {
+                        type: "thread.started",
+                        thread_id: `parallel-${index}`,
+                      };
+                      if (++scansStarted === 2) releaseScans();
+                      await concurrentScans;
+                      launches.push({
+                        index,
+                        home: options.env?.["CODEX_HOME"],
+                        directory: options.env?.["CODEX_SECURITY_SCAN_DIR"],
+                        before,
+                        after: structuredClone(options.config),
+                      });
+                      const interrupted = new Error(
+                        "parallel managed scan reached",
+                      );
+                      controllers[index]!.abort(interrupted);
+                      throw interrupted;
+                    })(),
+                  };
+                },
+              }),
+            }),
           },
         );
       }),
     );
-
     try {
       const results = await Promise.allSettled(
         clients.map((client, index) =>
           client
-            .run(repository, { mode: "deep", workers: index + 2 })
+            .run(repository, {
+              mode: "deep",
+              workers: index + 2,
+              subagents: index,
+              maxDiscoveryRuns: 1,
+              signal: controllers[index]!.signal,
+            })
             .finally(releaseScans),
         ),
       );
-      for (const result of results) {
-        expect(result).toMatchObject({
-          status: "rejected",
-          reason: expect.objectContaining({
-            message: "parallel managed scan reached",
-          }),
+      for (const result of results) expect(result.status).toBe("rejected");
+      expect(scansStarted).toBe(2);
+      expect(launches).toHaveLength(2);
+      for (const launch of launches) {
+        expect(launch.home).toBe(credentialHome);
+        expect(launch.directory).toBe(
+          join(
+            root,
+            `parallel-scan-${launch.index}`,
+            "artifacts",
+            "deep-scan",
+            "passes",
+            "pass-1",
+          ),
+        );
+        expect(launch.before).toMatchObject({
+          model: launch.index === 0 ? "gpt-5.6-sol" : "gpt-5.6-terra",
+          features: {
+            multi_agent_v2: {
+              max_concurrent_threads_per_session: launch.index + 1,
+            },
+          },
         });
+        expect(launch.after).toEqual(launch.before);
+        expect(
+          recipes.filter(({ index }) => index === launch.index),
+        ).toMatchObject([
+          {
+            mode: "deep",
+            deepScan: { workers: launch.index + 2, subagents: launch.index },
+          },
+          { mode: "standard" },
+        ]);
       }
       expect(existsSync(credentialHome)).toBe(true);
-      expect(scansStarted).toBe(2);
-      expect(deepScanConfigPaths.size).toBe(2);
-      const pluginConfiguration = JSON.parse(
-        await readFile(join(PLUGIN_ROOT, ".mcp.json"), "utf8"),
-      ) as { mcpServers: Record<string, { env_vars: string[] }> };
-      expect(
-        pluginConfiguration.mcpServers["codex-security"]?.env_vars.includes(
-          "CODEX_SECURITY_DEEP_SCAN_CONFIG_PATH",
-        ),
-      ).toBe(true);
     } finally {
       releaseScans();
-      await Promise.all(clients.map(async (client) => await client.close()));
+      controllers.forEach((controller) => controller.abort());
+      await Promise.all(clients.map((client) => client.close()));
     }
   });
 
@@ -646,3 +839,74 @@ process.exit(process.exitCode ?? 0);
     }
   });
 });
+
+test.skipIf(process.platform === "win32")(
+  "a reused managed client restores optional auth settings before probing credentials",
+  async () => {
+    const root = await temporaryDirectory();
+    const repository = join(root, "repository");
+    const home = join(root, "home");
+    await mkdir(repository);
+    await mkdir(home, { mode: 0o700 });
+    const capture = join(root, "status-configs.json");
+    const executable = join(root, "synthetic-status");
+    const node = execFileSync("node", ["-p", "process.execPath"], {
+      encoding: "utf8",
+    }).trim();
+    await writeFile(
+      executable,
+      `#!${node}
+const fs = require("node:fs");
+const capture = ${JSON.stringify(capture)};
+const seen = fs.existsSync(capture) ? JSON.parse(fs.readFileSync(capture, "utf8")) : [];
+seen.push(fs.readFileSync(require("node:path").join(process.env.CODEX_HOME, "config.toml"), "utf8"));
+fs.writeFileSync(capture, JSON.stringify(seen));
+console.log(seen.length === 1 ? "Not logged in" : "Logged in using ChatGPT");
+process.exit(seen.length === 1 ? 1 : 0);
+`,
+    );
+    await chmod(executable, 0o700);
+    const client = new TestClient(
+      { pluginPath: PLUGIN_ROOT },
+      {
+        environment: {
+          CODEX_HOME: home,
+          CODEX_SECURITY_STATE_DIR: join(root, "state"),
+        },
+        resolveCodexCommand: () => ({ command: executable }),
+        prepareRuntime: async () => ({
+          ...preparedRuntime(home),
+          credentialsAvailable: false,
+          environment: { CODEX_HOME: home },
+          configPath: join(root, "preflight.toml"),
+        }),
+        resolvePluginPython: async () => "/managed/python",
+        createCodex: () => {
+          throw new Error("synthetic authenticated execution reached");
+        },
+      },
+    );
+    try {
+      await expect(client.run(repository)).rejects.toThrow(
+        "No credentials were found",
+      );
+      await writeFile(
+        join(home, "config.toml"),
+        'forced_login_method = "chatgpt"\nforced_chatgpt_workspace_id = "synthetic-other-workspace"\n',
+      );
+      await expect(client.run(repository)).rejects.toThrow(
+        "synthetic authenticated execution reached",
+      );
+      const configs = JSON.parse(await readFile(capture, "utf8")).map(
+        (text: string) => parseToml(text),
+      );
+      expect(configs).toHaveLength(2);
+      for (const config of configs) {
+        expect(config).not.toHaveProperty("forced_login_method");
+        expect(config).not.toHaveProperty("forced_chatgpt_workspace_id");
+      }
+    } finally {
+      await client.close();
+    }
+  },
+);
