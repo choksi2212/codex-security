@@ -106,6 +106,88 @@ def pending_scan(tmp_path, workbench_api, monkeypatch, request):
         )
 
 
+@pytest.mark.parametrize("pending_scan", ["standard", "deep", "deep_child"], indirect=True)
+def test_completion_retains_checkpoint_after_failed_commit_and_later_draft(
+    pending_scan, monkeypatch
+):
+    fixture = pending_scan
+    saved, directory = fixture.saved, fixture.directory
+    fixture.publish(fixture.empty)
+    committed = (directory / "artifacts/scan-draft.json").read_bytes()
+    write = saved.write_scan_local_bytes
+
+    def fail_commit(root, relative, contents, **kwargs):
+        if relative == "artifacts/scan-draft.json":
+            raise OSError("Synthetic committed draft interruption")
+        return write(root, relative, contents, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(saved, "write_scan_local_bytes", fail_commit)
+        with pytest.raises(OSError, match="committed draft interruption"):
+            fixture.publish(fixture.documents)
+    assert (directory / "artifacts/scan-draft.json").read_bytes() == committed
+    retained = {path.name: path.read_bytes() for path in (directory / "checkpoints").glob("*.json")}
+    assert any(fixture.expected["title"] in value.decode() for value in retained.values())
+    fixture.publish(fixture.empty)
+    run_workbench(fixture.state, "prepare-scan-completion", "--scan-id", fixture.scan_id)
+    findings = json.loads((directory / "findings.json").read_text())["findings"]
+    assert {finding["title"] for finding in findings} == {
+        fixture.expected["title"],
+        *([fixture.child_title] if fixture.child_title else []),
+    }
+    retained_finding = next(
+        finding for finding in findings if finding["title"] == fixture.expected["title"]
+    )
+    assert retained_finding["codeEvidence"] == fixture.expected["codeEvidence"]
+    assert fixture.expected["title"] in (directory / "report.md").read_text()
+    assert json.loads((directory / "scan-manifest.json").read_text())["scan"]["sealedAt"]
+    assert all(
+        (directory / "checkpoints" / name).read_bytes() == value for name, value in retained.items()
+    )
+
+
+def test_later_commits_retire_accepted_markers_after_cleanup_interruption(
+    pending_scan, monkeypatch
+):
+    fixture = pending_scan
+    saved, directory = fixture.saved, fixture.directory
+    remove = saved._remove_scan_local_file_if_exists
+    rejected = copy.deepcopy(fixture.empty)
+    rejected["coverage"]["surfaces"][0]["disposition"] = "rejected"
+
+    def fail_cleanup(root, relative):
+        if relative.startswith("checkpoints/pending/"):
+            raise OSError("Synthetic checkpoint cleanup interruption")
+        return remove(root, relative)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(saved, "_remove_scan_local_file_if_exists", fail_cleanup)
+        with pytest.raises(OSError, match="cleanup interruption"):
+            fixture.publish(fixture.documents)
+        accepted = (directory / "artifacts/scan-draft.json").read_bytes()
+        with pytest.raises(OSError, match="cleanup interruption"):
+            fixture.publish(rejected)
+        assert (directory / "artifacts/scan-draft.json").read_bytes() == accepted
+    committed = json.loads((directory / "artifacts/scan-draft.json").read_text())
+    acknowledged = committed["reconciledCheckpointIds"]
+    assert len(acknowledged) == 1
+    evidence = (directory / "checkpoints" / acknowledged[0]).read_bytes()
+    assert (directory / "checkpoints/pending" / acknowledged[0]).exists()
+    # An explicit rejection in a later accepted draft must not be reopened by the marker.
+    fixture.publish(rejected)
+    assert not (directory / "checkpoints/pending" / acknowledged[0]).exists()
+    fixture.publish(rejected)
+    run_workbench(fixture.state, "prepare-scan-completion", "--scan-id", fixture.scan_id)
+    assert json.loads((directory / "findings.json").read_text())["findings"] == []
+    assert (
+        json.loads((directory / "coverage.json").read_text())["surfaces"][0]["disposition"]
+        == "rejected"
+    )
+    assert fixture.expected["title"] not in (directory / "report.md").read_text()
+    assert (directory / "checkpoints" / acknowledged[0]).read_bytes() == evidence
+    assert list((directory / "checkpoints/pending").glob("*.json")) == []
+
+
 @pytest.mark.parametrize("pending_scan", ["standard", "deep"], indirect=True)
 @pytest.mark.parametrize(
     ("document", "invalid"),

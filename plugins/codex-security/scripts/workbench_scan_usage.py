@@ -76,14 +76,12 @@ def reconcile_completed_scan_cost(
         )
 
 
-def merge_scan_cost(stored: str | None, incoming: str | None) -> str | None:
-    """Replace supplied cost/usage fields while retaining the other measured fields."""
-    fields = {**stored_scan_cost_fields(stored), **stored_scan_cost_fields(incoming)}
-    if not fields:
-        return None
-    return json.dumps(
-        fields if "usage" in fields else fields["cost"], separators=(",", ":"), allow_nan=False
-    )
+def merge_scan_cost(existing: str | None, incoming: str | None) -> str | None:
+    """Keep measured usage unless an incoming receipt explicitly replaces it."""
+    if incoming is None:
+        return existing
+    fields = {**stored_scan_cost_fields(existing), **stored_scan_cost_fields(incoming)}
+    return json.dumps(fields if "usage" in fields else fields["cost"], allow_nan=False)
 
 
 def collect_scan_usage(

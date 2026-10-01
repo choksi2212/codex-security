@@ -1047,7 +1047,7 @@ def pin_legacy_manifest_digest(
     connection: sqlite3.Connection, scan_id: str, manifest_digest: str
 ) -> None:
     connection.execute("BEGIN IMMEDIATE")
-    try:
+    with connection:
         scan = require_scan(connection, scan_id)
         current = scan["seal_manifest_digest"]
         if current is not None and current != manifest_digest:
@@ -1057,10 +1057,6 @@ def pin_legacy_manifest_digest(
                 "UPDATE scans SET seal_manifest_digest = ? WHERE id = ?",
                 (manifest_digest, scan["id"]),
             )
-        connection.commit()
-    except BaseException:
-        connection.rollback()
-        raise
 
 
 def complete_scan(
@@ -1137,7 +1133,9 @@ def complete_budget_exhausted_scan(
                 f"Deep Scan reached its cost limit after an estimated "
                 f"${measured['estimatedUsd']:.6g}; completed discovery was preserved."
             )
-        budget_exhausted_draft(scan, scan_dir, candidates, warning)
+        saved_results.legacy_budget_exhausted_draft(
+            _WORKBENCH_DB_CONTEXT, scan, scan_dir, candidates, warning
+        )
         warnings = json.loads(scan["completion_warnings_json"])
         if warning not in warnings:
             connection.execute(
@@ -1222,17 +1220,6 @@ def budget_exhausted_candidates(scan: sqlite3.Row, scan_dir: Path) -> list[dict[
     return candidates
 
 
-def budget_exhausted_draft(
-    scan: sqlite3.Row,
-    scan_dir: Path,
-    candidates: list[dict[str, Any]],
-    warning: str,
-) -> None:
-    saved_results.legacy_budget_exhausted_draft(
-        _WORKBENCH_DB_CONTEXT, scan, scan_dir, candidates, warning
-    )
-
-
 def complete_scan_locked(
     connection: sqlite3.Connection,
     scan_id: str,
@@ -1241,6 +1228,7 @@ def complete_scan_locked(
     *,
     prepare_only: bool = False,
     thread_id: str | None = None,
+    composition: CompositionView | None = None,
 ) -> dict[str, Any]:
     scan = require_scan(connection, scan_id)
     if scan["status"] == "complete":
@@ -1267,7 +1255,6 @@ def complete_scan_locked(
         claim_token,
         error_message="Scan completion is owned by another continuation.",
     )
-    deep_scan.require_deep_scan_ready_for_parent_completion(connection, scan)
     warnings = json.loads(scan["completion_warnings_json"])
     target_warnings: list[str] = []
 
@@ -1307,6 +1294,12 @@ def complete_scan_locked(
         raise SystemExit(
             "The latest saved scan draft is incomplete; continue the scan before completing it."
         )
+    composition = composition if composition is not None else load_composition(connection, scan)
+    if not already_sealed:
+        if composition.legacy_run is not None:
+            deep_scan.require_deep_scan_ready_for_parent_completion(connection, scan)
+        else:
+            scan_history.require_composition_complete(scan, composition)
     completion_binding = workbench_completion_binding(scan, completion_timestamp, current_manifest)
     if scan["recipe_json"] is not None:
         missing_drafts = []
@@ -1327,25 +1320,51 @@ def complete_scan_locked(
                 f"{', '.join(missing_drafts)}. Check that the scan agent can run shell "
                 "commands and write to the scan directory before retrying."
             )
+    if scan["mode"] == "deep":
+        saved_results.advance_scan_phase(_WORKBENCH_DB_CONTEXT, connection, scan_id, "reporting")
+    completion_warnings = warnings if scan["mode"] != "deep" else None
     wrote = False
     try:
-        if scan["mode"] != "deep" and current_manifest is not None and not already_sealed:
-            documents = saved_results.merge_saved_results(
-                scan_dir,
-                scan["id"],
-                completion_binding,
-                warnings,
-                stopped=False,
-                reason="",
-                parent_documents=documents,
-            )
+        if current_manifest is not None and not already_sealed:
+            checkpoint = composition.checkpoint
+            if (
+                checkpoint is not None
+                and checkpoint.get("terminalReason") in {"capped", "saturated"}
+                and any(
+                    item.get("scanId") not in checkpoint["mergedScanIds"]
+                    for item in checkpoint["passes"]
+                )
+            ):
+                saved_results.stop_composition_children(
+                    _WORKBENCH_DB_CONTEXT, connection, composition
+                )
+                recovered = saved_results.save_composed_checkpoint(
+                    _WORKBENCH_DB_CONTEXT, connection, scan, scan_dir, composition
+                )
+                coverage = (
+                    documents[2]
+                    if documents is not None
+                    else read_json_object(scan_dir / ARTIFACTS["coverage"])
+                )
+                coverage["completeness"] = "partial"
+                saved_results.union_coverage(coverage, recovered["coverage"])
+                documents = current_manifest, {"findings": recovered["findings"]}, coverage
+                completion_warnings = warnings
+            if scan["mode"] != "deep" or saved_results._pending_result_paths(scan_dir):
+                documents = saved_results.merge_saved_results(
+                    scan_dir,
+                    scan["id"],
+                    completion_binding,
+                    warnings,
+                    stopped=False,
+                    reason="",
+                    parent_documents=documents,
+                )
         prepared = _prepare_scan_finalization(
             scan_dir,
             expected_coverage_mode=expected_coverage_mode(scan),
             completion_binding=completion_binding,
-            # Save the finished Deep result as submitted. Worker drafts and
-            # recovery repairs belong to the stopped-scan path.
-            completion_warnings=warnings if scan["mode"] != "deep" else None,
+            completion_warnings=completion_warnings,
             draft_documents=documents,
         )
         add_warning()
@@ -1368,17 +1387,13 @@ def complete_scan_locked(
     manifest_digest = published_manifest_digest(scan_dir, manifest)
     if prepare_only:
         connection.execute("BEGIN IMMEDIATE")
-        try:
+        with connection:
             updated = connection.execute(
                 "UPDATE scans SET completion_warnings_json = ? WHERE id = ? AND status = 'running'",
                 (json.dumps(warnings), scan["id"]),
             )
             if updated.rowcount != 1:
                 raise SystemExit("Only a running scan can be prepared for completion.")
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
         context = scan_context(connection, scan["id"])
         context["targetWarnings"] = target_warnings
         return context
@@ -1409,7 +1424,11 @@ def complete_scan_locked(
             return scan_context(connection, scan["id"])
         if scan["status"] != "running":
             raise SystemExit("Only a running scan can be completed.")
-        deep_scan.require_deep_scan_ready_for_parent_completion(connection, scan)
+        if not already_sealed:
+            if composition.legacy_run is not None:
+                deep_scan.require_deep_scan_ready_for_parent_completion(connection, scan)
+            else:
+                scan_history.require_composition_complete(scan, composition)
         handoff.require_current_continuation(
             scan,
             claim_token,
@@ -1493,13 +1512,7 @@ def cli_scan_resume(
     *,
     sealed_producer_version: Callable[[sqlite3.Row], str | None] | None = None,
 ) -> dict[str, Any]:
-    if (
-        scan["mode"] == "deep"
-        and connection.execute(
-            "SELECT 1 FROM deep_scan_runs WHERE scan_id = ?", (scan["id"],)
-        ).fetchone()
-        is not None
-    ):
+    if saved_results._uses_legacy_engine(connection, scan):
         result = scan_history._legacy_cli_scan_resume(
             connection,
             scan,
@@ -1711,9 +1724,7 @@ def set_scan_thread(connection: sqlite3.Connection, args: argparse.Namespace) ->
     with scan_completion_lock(args.scan_id), connection:
         scan = require_scan(connection, args.scan_id)
         handoff.require_current_continuation(
-            scan,
-            getattr(args, "claim_token", None),
-            error_message="Scan execution is owned by another continuation.",
+            scan, args.claim_token, error_message="Scan execution is owned by another continuation."
         )
         connection.execute(
             "INSERT OR IGNORE INTO scan_execution_threads(scan_id, thread_id) VALUES (?, ?)",
@@ -1859,7 +1870,7 @@ def set_finding_triage(connection: sqlite3.Connection, args: argparse.Namespace)
     note = optional_text(args.note, maximum=2400)
     require_close_note(close_reason, note)
     connection.execute("BEGIN IMMEDIATE")
-    try:
+    with connection:
         timestamp = now()
         occurrence = require_occurrence(connection, args.occurrence_id)
         if args.status == "closed":
@@ -1931,10 +1942,6 @@ def set_finding_triage(connection: sqlite3.Connection, args: argparse.Namespace)
             """,
             (occurrence["id"], args.status, close_reason, note, timestamp),
         )
-        connection.commit()
-    except BaseException:
-        connection.rollback()
-        raise
     return scan_context(connection, occurrence["scan_id"])
 
 
@@ -2258,7 +2265,7 @@ def set_finding_remediation(
     action_token = require_uuid(args.action_token, "action-token")
     summary = optional_text(args.summary, maximum=2400)
     verification_summary = optional_text(args.verification_summary, maximum=2400)
-    try:
+    with connection:
         occurrence = require_occurrence(connection, args.occurrence_id)
         require_finding_open(connection, occurrence["id"])
         scan = require_scan(connection, occurrence["scan_id"])
@@ -2373,10 +2380,6 @@ def set_finding_remediation(
             raise SystemExit(
                 "This remediation request changed. Refresh it before recording an update."
             )
-        connection.commit()
-    except BaseException:
-        connection.rollback()
-        raise
     return scan_context(connection, occurrence["scan_id"])
 
 
@@ -2722,9 +2725,6 @@ def scan_result(
         if occurrence["scan_id"] != scan["id"]:
             raise SystemExit("This finding does not belong to the selected scan.")
         occurrence_rows.append(occurrence)
-    finding_count = connection.execute(
-        "SELECT COUNT(*) FROM finding_occurrences WHERE scan_id = ?", (scan["id"],)
-    ).fetchone()[0]
     severity_counts = {
         row["severity"]: row["count"]
         for row in connection.execute(
@@ -2737,6 +2737,7 @@ def scan_result(
             (scan["id"],),
         )
     }
+    finding_count = sum(severity_counts.values())
     remediation_available, remediation_unavailable_reason = remediation_availability(scan)
     composition = (
         composition
@@ -2903,7 +2904,7 @@ def backfill_legacy_finding_details(connection: sqlite3.Connection, scan: sqlite
         return
 
     connection.execute("BEGIN IMMEDIATE")
-    try:
+    with connection:
         current = require_scan(connection, scan["id"])
         recorded_digest = current["seal_manifest_digest"]
         if recorded_digest is not None and recorded_digest != manifest_digest:
@@ -2921,10 +2922,6 @@ def backfill_legacy_finding_details(connection: sqlite3.Connection, scan: sqlite
                 "UPDATE scans SET seal_manifest_digest = ? WHERE id = ?",
                 (manifest_digest, scan["id"]),
             )
-        connection.commit()
-    except BaseException:
-        connection.rollback()
-        raise
 
 
 def legacy_finding_matches(row: sqlite3.Row, finding: Any) -> bool:
