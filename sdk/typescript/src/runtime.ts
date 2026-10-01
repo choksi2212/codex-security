@@ -112,10 +112,21 @@ print(json.dumps({
 const RESTORE_SCAN_ARTIFACT_PROGRAM = `
 from pathlib import Path
 from runpy import run_path
+import json
 import sys
 
 module = run_path(sys.argv[1])
 try:
+    if sys.argv[6] == "restoreMany":
+        for relative, length in json.loads(sys.stdin.buffer.readline()):
+            contents = sys.stdin.buffer.read(length)
+            if len(contents) != length:
+                raise module["ContractError"]("Incomplete artifact batch payload.")
+            module["write_scan_local_bytes"](
+                Path(sys.argv[2]), relative, contents,
+                expected_root_identity=(int(sys.argv[4]), int(sys.argv[5]))
+            )
+        sys.exit(0)
     operation = {
         "restore": "write_scan_local_bytes",
         "prepareDirectory": "prepare_scan_local_directory",
@@ -174,6 +185,10 @@ export interface WorkbenchCommandOptions {
 
 export interface ScanArtifactRestorer {
   restore(relativePath: string, contents: Uint8Array): Promise<void>;
+  /** Ordered writes through the same checked writer in one local process. */
+  restoreMany(
+    artifacts: readonly { path: string; contents: Uint8Array }[],
+  ): Promise<void>;
 }
 
 export function codexSecurityStateDirectory(
@@ -1819,7 +1834,7 @@ export async function prepareScanArtifactRestorer(
   }
 
   const update = async (
-    operation: "restore" | "prepareDirectory" | "remove",
+    operation: "restore" | "restoreMany" | "prepareDirectory" | "remove",
     relativePath: string,
     contents?: Uint8Array,
   ): Promise<void> => {
@@ -1842,7 +1857,9 @@ export async function prepareScanArtifactRestorer(
         ],
         pluginHelperEnvironment(options.environment),
         contents,
-        operation === "restore" ? undefined : options.signal,
+        operation === "restore" || operation === "restoreMany"
+          ? undefined
+          : options.signal,
       );
       if (!result.success) {
         throw new Error(
@@ -1853,7 +1870,7 @@ export async function prepareScanArtifactRestorer(
       }
     } catch (error) {
       throw new OutputDirectoryError(
-        operation === "restore"
+        operation === "restore" || operation === "restoreMany"
           ? "Could not safely restore a completed scan artifact."
           : "Could not safely update a scan artifact.",
         { cause: error },
@@ -1862,6 +1879,19 @@ export async function prepareScanArtifactRestorer(
   };
   return {
     restore: (path, contents) => update("restore", path, contents),
+    async restoreMany(artifacts) {
+      if (!artifacts.length) return;
+      const header = Buffer.from(
+        JSON.stringify(
+          artifacts.map(({ path, contents }) => [path, contents.byteLength]),
+        ) + "\n",
+      );
+      await update(
+        "restoreMany",
+        "",
+        Buffer.concat([header, ...artifacts.map(({ contents }) => contents)]),
+      );
+    },
     prepareDirectory: (path) => update("prepareDirectory", path),
     remove: (path) => update("remove", path),
     async projectChild(

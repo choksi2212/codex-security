@@ -22,7 +22,12 @@ import {
   prepareScanArtifactRestorer,
   runCodexCommand,
 } from "../src/runtime.js";
-import { combineScanCoverage, validateScanMerge } from "../src/scan-merge.js";
+import {
+  combineScanCoverage,
+  createScanMergeValidator,
+  deterministicScanMerge,
+  materializeScanAggregate,
+} from "../src/scan-merge.js";
 import { PLUGIN_ROOT } from "./plugin-root.js";
 
 const python =
@@ -234,18 +239,16 @@ with connect() as connection:
       (index) => legacy.findings[index]!,
     ),
   );
-  const result = validateScanMerge(
-    {
-      scanId: fixture.parentScanId,
-      groups: projected.draft.findings.map((finding) => ({
-        sourceFindingIds: finding.provenance.sourceFindingIds!,
-        canonicalSourceFindingId: finding.provenance.sourceFindingIds![0]!,
-      })),
-    },
+  const merge = await createScanMergeValidator(PLUGIN_ROOT);
+  const result = merge(
+    deterministicScanMerge([projected], null),
     [projected],
     null,
   );
-  expect(result.aggregate.findings[0]!.provenance.sourceFindings).toEqual([
+  expect(
+    materializeScanAggregate(result.aggregate).findings[0]!.provenance
+      .sourceFindings,
+  ).toEqual([
     { id: `${fixture.sourceScanId}:0`, finding: legacy.findings[first]! },
   ]);
   expect(await readFile(findingsPath, "utf8")).toBe(sourceBytes);
