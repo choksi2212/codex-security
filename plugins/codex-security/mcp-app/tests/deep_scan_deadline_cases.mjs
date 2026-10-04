@@ -5,7 +5,7 @@ export async function testDeepScanDeadlines({
   fixtureRun,
   FakeStore,
   FakeExecutor,
-  DeepScanCoordinator,
+  createCoordinator,
   deferred,
   immediateClock,
   eventually,
@@ -25,17 +25,12 @@ export async function testDeepScanDeadlines({
       canonicalCandidateId: "candidate-1",
       dedupNewFindings: [1],
     });
-    const coordinator = new DeepScanCoordinator({
-      run: fixture.run,
-      store,
-      executor,
-      pluginRoot: fixture.pluginRoot,
-      clock: immediateClock,
+    const coordinator = createCoordinator(fixture, store, executor, {
       discoveryTimeoutMs: 500,
     });
     coordinator.start();
 
-    await executor.dedupStarted;
+    await executor.dedupStarted.promise;
     await eventually(() => executor.runningDiscovery > 0);
     await eventually(() => executor.runningDiscovery === 0);
 
@@ -52,7 +47,7 @@ export async function testDeepScanDeadlines({
     const terminal = await coordinator.wait(undefined, 5_000);
     assert.equal(terminal?.status, "succeeded");
     assert.equal(terminal?.terminalReason, "capped");
-    assert.equal(store.failCalls, 0);
+    assert.equal(store.failureInputs.length, 0);
     assert.equal(executor.discoveryCalls, discoveryCallsAtDeadline);
     assert.equal(
       terminal.dispatchedCount < fixture.run.config.maxDiscoveryRuns,
@@ -96,12 +91,7 @@ export async function testDeepScanDeadlines({
       canonicalCandidateId: "candidate-1",
       dedupNewFindings: [1],
     });
-    const coordinator = new DeepScanCoordinator({
-      run: fixture.run,
-      store,
-      executor,
-      pluginRoot: fixture.pluginRoot,
-      clock: immediateClock,
+    const coordinator = createCoordinator(fixture, store, executor, {
       discoveryTimeoutMs: 500,
     });
     coordinator.start();
@@ -129,7 +119,7 @@ export async function testDeepScanDeadlines({
       terminal.dispatchedCount < fixture.run.config.maxDiscoveryRuns,
       true,
     );
-    assert.equal(store.failCalls, 0);
+    assert.equal(store.failureInputs.length, 0);
     assert.equal(executor.dedupCalls, 1);
     assert.equal(executor.runningDiscovery, 0);
 
@@ -157,9 +147,9 @@ export async function testDeepScanDeadlines({
       maxDiscoveryRuns: 8,
     });
     const store = new FakeStore(fixture.run);
-    const acceptancePersisted = deferred();
-    const releaseAcceptance = deferred();
-    const discoveryDeadlineReached = deferred();
+    const acceptancePersisted = Promise.withResolvers();
+    const releaseAcceptance = Promise.withResolvers();
+    const discoveryDeadlineReached = Promise.withResolvers();
     const updateWorker = store.updateWorker.bind(store);
     store.updateWorker = async (update) => {
       const persisted = await updateWorker(update);
@@ -174,12 +164,7 @@ export async function testDeepScanDeadlines({
       canonicalCandidateId: "candidate-1",
       dedupNewFindings: [1],
     });
-    const coordinator = new DeepScanCoordinator({
-      run: fixture.run,
-      store,
-      executor,
-      pluginRoot: fixture.pluginRoot,
-      clock: immediateClock,
+    const coordinator = createCoordinator(fixture, store, executor, {
       discoveryTimeoutMs: 500,
       log: (event) => {
         if (event.event === "discovery_deadline_reached")
@@ -196,7 +181,7 @@ export async function testDeepScanDeadlines({
     const terminal = await terminalWait;
     assert.equal(terminal?.status, "succeeded");
     assert.equal(terminal?.terminalReason, "capped");
-    assert.equal(store.failCalls, 0);
+    assert.equal(store.failureInputs.length, 0);
     assert.equal(executor.discoveryCalls, 1);
     assert.equal(executor.dedupCalls, 1);
 
@@ -225,22 +210,17 @@ export async function testDeepScanDeadlines({
     const store = new FakeStore(fixture.run);
     const executor = new FakeExecutor({ blockDiscovery: true });
     const completedDrafts = [];
-    const coordinator = new DeepScanCoordinator({
-      run: fixture.run,
-      store,
-      executor,
-      pluginRoot: fixture.pluginRoot,
-      clock: immediateClock,
+    const coordinator = createCoordinator(fixture, store, executor, {
       discoveryTimeoutMs: 500,
       onComplete: async (draft) => completedDrafts.push(structuredClone(draft)),
     });
     coordinator.start();
-    await executor.discoveryStarted;
+    await executor.discoveryStarted.promise;
 
     const terminal = await coordinator.wait(undefined, 5_000);
     assert.equal(terminal?.status, "succeeded");
     assert.equal(terminal?.terminalReason, "capped");
-    assert.equal(store.failCalls, 0);
+    assert.equal(store.failureInputs.length, 0);
     assert.equal(store.finishCalls.length, 1);
     assert.equal(executor.runningDiscovery, 0);
     assert.equal(executor.dedupCalls, 0);
@@ -275,19 +255,13 @@ export async function testDeepScanDeadlines({
     fixture.run.createdAt = new Date(immediateClock.now()).toISOString();
     const store = new FakeStore(fixture.run);
     const executor = new FakeExecutor();
-    const coordinator = new DeepScanCoordinator({
-      run: fixture.run,
-      store,
-      executor,
-      pluginRoot: fixture.pluginRoot,
-      clock: immediateClock,
-    });
+    const coordinator = createCoordinator(fixture, store, executor, {});
     coordinator.start();
 
     const terminal = await coordinator.wait(undefined, 5_000);
     assert.equal(terminal?.status, "succeeded");
     assert.equal(terminal?.terminalReason, "capped");
-    assert.equal(store.failCalls, 0);
+    assert.equal(store.failureInputs.length, 0);
     assert.equal(store.finishCalls.length, 1);
     assert.equal(executor.discoveryCalls, 0);
     assert.equal(executor.dedupCalls, 0);
@@ -299,42 +273,9 @@ export async function testDeepScanDeadlines({
     assert.equal(store.workers.size, 0);
   }
 
-  async function testDiscoveryDeadlineWithoutAcceptedWorkersPublishesEmptyResults() {
-    const fixture = await fixtureRun({
-      workers: 1,
-      subagents: 0,
-      stopAfterNoNew: 99,
-      maxDiscoveryRuns: 8,
-      maxTimeHours: 1e-12,
-    });
-    fixture.run.createdAt = new Date(immediateClock.now()).toISOString();
-    const store = new FakeStore(fixture.run);
-    const executor = new FakeExecutor();
-    const coordinator = new DeepScanCoordinator({
-      run: fixture.run,
-      store,
-      executor,
-      pluginRoot: fixture.pluginRoot,
-      clock: immediateClock,
-    });
-    coordinator.start();
-
-    const terminal = await coordinator.wait(undefined, 5_000);
-    assert.equal(terminal?.status, "succeeded");
-    assert.equal(store.failCalls, 0);
-    assert.equal(store.finishCalls.length, 1);
-    assert.equal(executor.discoveryCalls, 0);
-    assert.equal(executor.dedupCalls, 0);
-    assert.deepEqual(
-      JSON.parse(await readFile(terminal.manifestPath, "utf8")).findings,
-      [],
-    );
-  }
-
   await testDiscoveryDeadlineDrainsActiveReducerAndPreservesFindings();
   await testDiscoveryDeadlineReducesSingleBufferedFinding();
   await testDiscoveryAcceptedAtDeadlineIsReduced();
   await testDiscoveryDeadlineWithoutAcceptedWorkersReturnsPartialEvidence();
   await testDiscoveryDeadlineBeforeWorkerDispatchReturnsPartialEvidence();
-  await testDiscoveryDeadlineWithoutAcceptedWorkersPublishesEmptyResults();
 }
