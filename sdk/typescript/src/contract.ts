@@ -452,10 +452,7 @@ function validateCanonicalContract(
         : [["severity.scoringSystem", finding.severity.scoringSystem]]),
     ]) {
       // Match the producer's Python str.strip without changing saved text.
-      if (
-        value === undefined ||
-        /^[\p{White_Space}\u001c-\u001f]*$/u.test(value)
-      ) {
+      if (/^[\p{White_Space}\u001c-\u001f]*$/u.test(value ?? "")) {
         throw new ContractValidationError(
           `${context}.${field}: expected a non-empty string.`,
         );
@@ -471,10 +468,7 @@ function validateCanonicalContract(
           { cause: error },
         );
       }
-      if (
-        location.endLine !== undefined &&
-        location.endLine < location.startLine
-      ) {
+      if ((location.endLine ?? location.startLine) < location.startLine) {
         throw new ContractValidationError(
           `${locationContext}.endLine: expected an integer >= startLine.`,
         );

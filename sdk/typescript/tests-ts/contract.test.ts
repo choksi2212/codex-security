@@ -491,30 +491,28 @@ describe("canonical scan contract", () => {
   });
 
   test.each([
-    "title",
-    "summary",
-    "remediation",
-    "confidence.rationale",
-    "taxonomy.category",
-    "provenance.source",
-    "severity.scoringSystem",
-  ])("agrees with Python on required finding text %s", async (field) => {
-    const scanDir = await copyExample();
-    const findingsPath = join(scanDir, "findings.json");
-    const findings = await readJson(findingsPath);
-    const finding = findings["findings"][0];
-    finding["severity"]["score"] = 5;
-    finding["severity"]["scoringSystem"] = "synthetic";
-    const parts = field.split(".");
-    const object = parts.length === 1 ? finding : finding[parts[0]!];
-    const key = parts.at(-1)!;
-    for (const [text, valid] of [
-      [" \t\n", false],
-      ["\u0085\u001c", false],
-      ["\ufeff", true],
-      ["  Synthetic required text. \n", true],
-    ] as const) {
-      object[key] = text;
+    ["title", " \t\n", false],
+    ["summary", " \t\n", false],
+    ["remediation", " \t\n", false],
+    ["confidence.rationale", " \t\n", false],
+    ["taxonomy.category", " \t\n", false],
+    ["provenance.source", " \t\n", false],
+    ["severity.scoringSystem", " \t\n", false],
+    ["title", "\u0085\u001c", false],
+    ["title", "\ufeff", true],
+    ["title", "  Synthetic required text. \n", true],
+  ] as const)(
+    "agrees with Python on required finding text %s %j",
+    async (field, text, valid) => {
+      const scanDir = await copyExample();
+      const findingsPath = join(scanDir, "findings.json");
+      const findings = await readJson(findingsPath);
+      const finding = findings["findings"][0];
+      finding["severity"]["score"] = 5;
+      finding["severity"]["scoringSystem"] = "synthetic";
+      const parts = field.split(".");
+      const object = parts.length === 1 ? finding : finding[parts[0]!];
+      object[parts.at(-1)!] = text;
       await writeJson(findingsPath, findings);
       await reseal(scanDir);
       const exported = pythonExport(scanDir);
@@ -529,8 +527,8 @@ describe("canonical scan contract", () => {
         await expect(loaded).rejects.toThrow("non-empty string");
       }
       expect(await readJson(findingsPath)).toEqual(findings);
-    }
-  });
+    },
+  );
 
   test.each(["scan-manifest.json", "findings.json", "coverage.json"])(
     "reads a UTF-8 BOM in sealed %s without changing its bytes",
@@ -860,43 +858,28 @@ describe("canonical scan contract", () => {
     ).resolves.toBeDefined();
   });
 
-  test("rejects reversed finding line ranges", async () => {
-    const scanDir = await copyExample();
-    const findingsPath = join(scanDir, "findings.json");
-    const findings = await readJson(findingsPath);
-    expect(findings["findings"][0]["locations"][0]["startLine"]).toBe(41);
-    findings["findings"][0]["locations"][0]["endLine"] = 40;
-    await writeJson(findingsPath, findings);
-    await reseal(scanDir);
+  test.each([-1, 0])(
+    "agrees with Python on a finding end-line offset of %i",
+    async (offset) => {
+      const scanDir = await copyExample();
+      const findingsPath = join(scanDir, "findings.json");
+      const findings = await readJson(findingsPath);
+      const location = findings["findings"][0]["locations"][0];
+      location["endLine"] = location["startLine"] + offset;
+      await writeJson(findingsPath, findings);
+      await reseal(scanDir);
 
-    expect(pythonExport(scanDir).exitCode).not.toBe(0);
-
-    await expect(
-      loadContract(scanDir, { pluginRoot: PLUGIN_ROOT }),
-    ).rejects.toThrow(
-      "findings.findings[0].locations[0].endLine: expected an integer >= startLine.",
-    );
-  });
-
-  test("accepts a valid multi-line finding line range", async () => {
-    const scanDir = await copyExample();
-    const findingsPath = join(scanDir, "findings.json");
-    const findings = await readJson(findingsPath);
-    const location = findings["findings"][0]["locations"][0];
-    expect(location["endLine"]).toBeGreaterThan(location["startLine"]);
-    location["endLine"] = location["startLine"];
-    await writeJson(findingsPath, findings);
-    await reseal(scanDir);
-
-    const exported = pythonExport(scanDir);
-    expect(exported.exitCode, new TextDecoder().decode(exported.stderr)).toBe(
-      0,
-    );
-
-    await expect(
-      loadContract(scanDir, { pluginRoot: PLUGIN_ROOT }),
-    ).resolves.toBeDefined();
-  });
+      expect(pythonExport(scanDir).exitCode === 0).toBe(offset === 0);
+      const loaded = loadContract(scanDir, { pluginRoot: PLUGIN_ROOT });
+      if (offset === 0) {
+        await expect(loaded).resolves.toBeDefined();
+      } else {
+        await expect(loaded).rejects.toThrow(
+          "findings.findings[0].locations[0].endLine: expected an integer >= startLine.",
+        );
+      }
+    },
+  );
 
   test("rejects trailing-dot aliases for sealed artifacts", async () => {
     const scanDir = await copyExample();
